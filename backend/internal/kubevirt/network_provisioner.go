@@ -61,6 +61,7 @@ func (p *NetworkProvisioner) DeleteSubnet(ctx context.Context, ovnVPCName string
 		return errors.New("kubevirt applier is not configured")
 	}
 	if subnet.Type == "public" {
+		// VpcNatGateway is shared per-VPC and serves all public subnets, so it is left in place; only the per-subnet SnatRule and EIP are removed here. The gateway is cleaned up with the VPC.
 		egress := BuildPublicEgressResources(p.namespace, ovnVPCName, p.externalNetwork, subnet)
 		_ = p.applier.Delete(ctx, egress.SnatRule)
 		_ = p.applier.Delete(ctx, egress.EIP)
