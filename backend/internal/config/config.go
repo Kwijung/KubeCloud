@@ -11,6 +11,7 @@ type Config struct {
 	KubeconfigPath           string
 	KubeVirtNamespace        string
 	KubeVirtStorageClassName string
+	OVNExternalNetwork       string
 }
 
 func Load() Config {
@@ -23,6 +24,7 @@ func Load() Config {
 		KubeconfigPath:           env("KUBECONFIG", ""),
 		KubeVirtNamespace:        env("KLOUDIA_KUBEVIRT_NAMESPACE", "kloudia-vms"),
 		KubeVirtStorageClassName: env("KLOUDIA_KUBEVIRT_STORAGE_CLASS", "test-delete"),
+		OVNExternalNetwork:       env("KLOUDIA_OVN_EXTERNAL_NETWORK", "ovn-vpc-external-network"),
 	}
 }
 
