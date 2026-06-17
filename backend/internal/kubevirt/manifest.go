@@ -14,78 +14,102 @@ type Resources struct {
 func BuildResources(namespace string, storageClassName string, plan domain.VirtualMachineProvisioningPlan) Resources {
 	vmName := plan.VirtualMachine.ID
 	dataVolumeName := fmt.Sprintf("%s-rootdisk", vmName)
-	return Resources{
-		DataVolume: map[string]any{
-			"apiVersion": "cdi.kubevirt.io/v1beta1",
-			"kind":       "DataVolume",
-			"metadata": map[string]any{
-				"name":      dataVolumeName,
-				"namespace": namespace,
-				"labels":    labels(plan),
+
+	dataVolume := map[string]any{
+		"apiVersion": "cdi.kubevirt.io/v1beta1",
+		"kind":       "DataVolume",
+		"metadata": map[string]any{
+			"name":      dataVolumeName,
+			"namespace": namespace,
+			"labels":    labels(plan),
+		},
+		"spec": map[string]any{
+			"source": map[string]any{
+				"http": map[string]any{
+					"url": plan.Image.SourceURL,
+				},
 			},
-			"spec": map[string]any{
-				"source": map[string]any{
-					"http": map[string]any{
-						"url": plan.Image.SourceURL,
+			"pvc": map[string]any{
+				"accessModes": []any{"ReadWriteOnce"},
+				"resources": map[string]any{
+					"requests": map[string]any{
+						"storage": formatBytes(plan.Flavor.RootDiskBytes),
 					},
 				},
-				"pvc": map[string]any{
-					"accessModes": []any{"ReadWriteOnce"},
-					"resources": map[string]any{
-						"requests": map[string]any{
-							"storage": formatBytes(plan.Flavor.RootDiskBytes),
+				"storageClassName": storageClassName,
+			},
+		},
+	}
+
+	vm := map[string]any{
+		"apiVersion": "kubevirt.io/v1",
+		"kind":       "VirtualMachine",
+		"metadata": map[string]any{
+			"name":      vmName,
+			"namespace": namespace,
+			"labels":    labels(plan),
+		},
+		"spec": map[string]any{
+			"runStrategy": "Always",
+			"template": map[string]any{
+				"metadata": map[string]any{
+					"labels": labels(plan),
+				},
+				"spec": map[string]any{
+					"domain": map[string]any{
+						"cpu": map[string]any{
+							"cores": int64(plan.Flavor.CPU),
+						},
+						"devices": map[string]any{
+							"disks": []any{
+								map[string]any{
+									"name": "rootdisk",
+									"disk": map[string]any{"bus": "virtio"},
+								},
+							},
+						},
+						"resources": map[string]any{
+							"requests": map[string]any{
+								"memory": formatBytes(plan.Flavor.MemoryBytes),
+							},
 						},
 					},
-					"storageClassName": storageClassName,
+					"volumes": []any{
+						map[string]any{
+							"name":       "rootdisk",
+							"dataVolume": map[string]any{"name": dataVolumeName},
+						},
+					},
 				},
 			},
 		},
-		VirtualMachine: map[string]any{
-			"apiVersion": "kubevirt.io/v1",
-			"kind":       "VirtualMachine",
-			"metadata": map[string]any{
-				"name":      vmName,
-				"namespace": namespace,
-				"labels":    labels(plan),
+	}
+
+	if plan.Subnet != nil {
+		applyMultusNetwork(vm, namespace, *plan.Subnet)
+	}
+
+	return Resources{
+		DataVolume:     dataVolume,
+		VirtualMachine: vm,
+	}
+}
+
+func applyMultusNetwork(vm map[string]any, namespace string, subnet domain.Subnet) {
+	templateSpec := vm["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+	templateSpec["networks"] = []any{
+		map[string]any{
+			"name": "net1",
+			"multus": map[string]any{
+				"networkName": namespace + "/" + subnet.NADName,
 			},
-			"spec": map[string]any{
-				"runStrategy": "Always",
-				"template": map[string]any{
-					"metadata": map[string]any{
-						"labels": labels(plan),
-					},
-					"spec": map[string]any{
-						"domain": map[string]any{
-							"cpu": map[string]any{
-								"cores": int64(plan.Flavor.CPU),
-							},
-							"devices": map[string]any{
-								"disks": []any{
-									map[string]any{
-										"name": "rootdisk",
-										"disk": map[string]any{
-											"bus": "virtio",
-										},
-									},
-								},
-							},
-							"resources": map[string]any{
-								"requests": map[string]any{
-									"memory": formatBytes(plan.Flavor.MemoryBytes),
-								},
-							},
-						},
-						"volumes": []any{
-							map[string]any{
-								"name": "rootdisk",
-								"dataVolume": map[string]any{
-									"name": dataVolumeName,
-								},
-							},
-						},
-					},
-				},
-			},
+		},
+	}
+	devices := templateSpec["domain"].(map[string]any)["devices"].(map[string]any)
+	devices["interfaces"] = []any{
+		map[string]any{
+			"name":   "net1",
+			"bridge": map[string]any{},
 		},
 	}
 }
