@@ -83,6 +83,34 @@ CREATE TABLE IF NOT EXISTS virtual_machines (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS networks (
+  id text PRIMARY KEY,
+  project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  ovn_vpc_name text NOT NULL,
+  status text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (project_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS subnets (
+  id text PRIMARY KEY,
+  network_id text NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
+  project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  cidr text NOT NULL,
+  gateway text NOT NULL,
+  type text NOT NULL,
+  ovn_subnet_name text NOT NULL,
+  nad_name text NOT NULL,
+  status text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (network_id, name)
+);
+
+ALTER TABLE virtual_machines
+  ADD COLUMN IF NOT EXISTS subnet_id text REFERENCES subnets(id);
+
 INSERT INTO projects (id, name, description)
 VALUES
   ('platform', 'Platform', 'Shared platform engineering workspace'),
