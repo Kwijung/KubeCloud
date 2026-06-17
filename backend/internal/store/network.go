@@ -164,7 +164,7 @@ func (p *Postgres) CreateSubnet(ctx context.Context, projectID string, networkID
 		if err != nil {
 			return domain.Subnet{}, err
 		}
-	} else if !cidrContainsHost(canonicalCIDR, gateway) {
+	} else if !isUsableHostGateway(canonicalCIDR, gateway) {
 		return domain.Subnet{}, ErrSubnetCIDRInvalid
 	}
 
@@ -268,16 +268,38 @@ FOR UPDATE`, projectID, subnetID).
 	return s, nil
 }
 
-func cidrContainsHost(cidr string, host string) bool {
+// isUsableHostGateway reports whether host is a valid gateway address within cidr —
+// i.e. it is inside the prefix but is neither the network address nor the broadcast address.
+// Only IPv4 is supported.
+func isUsableHostGateway(cidr string, host string) bool {
 	prefix, err := netip.ParsePrefix(cidr)
-	if err != nil {
+	if err != nil || !prefix.Addr().Is4() {
 		return false
 	}
 	addr, err := netip.ParseAddr(host)
-	if err != nil {
+	if err != nil || !addr.Is4() || !prefix.Contains(addr) {
 		return false
 	}
-	return prefix.Contains(addr)
+	network := prefix.Masked().Addr()
+	if addr == network {
+		return false // network address is not a usable host
+	}
+	if addr == broadcastAddr(prefix) {
+		return false // broadcast address is not a usable host
+	}
+	return true
+}
+
+// broadcastAddr returns the last (broadcast) address of an IPv4 prefix.
+func broadcastAddr(prefix netip.Prefix) netip.Addr {
+	b := prefix.Masked().Addr().As4()
+	hostBits := 32 - prefix.Bits()
+	for i := 0; i < hostBits; i++ {
+		byteIdx := 3 - i/8
+		bitIdx := uint(i % 8)
+		b[byteIdx] |= 1 << bitIdx
+	}
+	return netip.AddrFrom4(b)
 }
 
 func (p *Postgres) DeleteNetwork(ctx context.Context, projectID string, networkID string) (domain.Network, error) {

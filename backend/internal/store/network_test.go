@@ -39,3 +39,23 @@ func TestCIDRsOverlapDetectsContainment(t *testing.T) {
 		t.Fatal("expected disjoint /24s not to overlap")
 	}
 }
+
+func TestIsUsableHostGateway(t *testing.T) {
+	cases := []struct {
+		cidr, host string
+		want       bool
+		desc       string
+	}{
+		{"10.0.0.0/24", "10.0.0.1", true, "first usable host should be valid"},
+		{"10.0.0.0/24", "10.0.0.0", false, "network address must be rejected"},
+		{"10.0.0.0/24", "10.0.0.255", false, "broadcast address must be rejected"},
+		{"10.0.0.0/24", "10.0.1.5", false, "address outside CIDR must be rejected"},
+	}
+	for _, tc := range cases {
+		got := isUsableHostGateway(tc.cidr, tc.host)
+		if got != tc.want {
+			t.Errorf("isUsableHostGateway(%q, %q) = %v, want %v — %s",
+				tc.cidr, tc.host, got, tc.want, tc.desc)
+		}
+	}
+}
