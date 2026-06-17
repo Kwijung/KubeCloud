@@ -69,3 +69,22 @@ func index(haystack, needle string) int {
 	}
 	return -1
 }
+
+func TestBuildPublicEgressResources(t *testing.T) {
+	s := domain.Subnet{
+		ID: "platform-app-web", ProjectID: "platform", NetworkID: "platform-app",
+		CIDR: "10.0.0.0/24", Type: "public",
+		OVNSubnetName: "kloudia-subnet-platform-app-web",
+	}
+	res := BuildPublicEgressResources("kloudia-vms", "kloudia-vpc-platform-app", "ovn-vpc-external-network", s)
+	if res.NatGateway["kind"] != "VpcNatGateway" {
+		t.Fatalf("expected VpcNatGateway, got %#v", res.NatGateway["kind"])
+	}
+	if res.EIP["kind"] != "IptablesEIP" {
+		t.Fatalf("expected IptablesEIP, got %#v", res.EIP["kind"])
+	}
+	snatSpec := res.SnatRule["spec"].(map[string]any)
+	if snatSpec["internalCIDR"] != "10.0.0.0/24" {
+		t.Fatalf("expected SNAT internalCIDR to match subnet, got %#v", snatSpec["internalCIDR"])
+	}
+}
