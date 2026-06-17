@@ -28,12 +28,36 @@ type Image struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+type Network struct {
+	ID         string    `json:"id"`
+	ProjectID  string    `json:"projectId"`
+	Name       string    `json:"name"`
+	OVNVPCName string    `json:"-"`
+	Status     string    `json:"status"`
+	CreatedAt  time.Time `json:"createdAt"`
+}
+
+type Subnet struct {
+	ID            string    `json:"id"`
+	NetworkID     string    `json:"networkId"`
+	ProjectID     string    `json:"projectId"`
+	Name          string    `json:"name"`
+	CIDR          string    `json:"cidr"`
+	Gateway       string    `json:"gateway"`
+	Type          string    `json:"type"` // private | public
+	OVNSubnetName string    `json:"-"`
+	NADName       string    `json:"-"`
+	Status        string    `json:"status"`
+	CreatedAt     time.Time `json:"createdAt"`
+}
+
 type VirtualMachine struct {
 	ID        string    `json:"id"`
 	ProjectID string    `json:"projectId"`
 	Name      string    `json:"name"`
 	ImageID   string    `json:"imageId"`
 	FlavorID  string    `json:"flavorId"`
+	SubnetID  string    `json:"subnetId"`
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"createdAt"`
 }
@@ -42,12 +66,14 @@ type CreateVirtualMachineInput struct {
 	Name     string
 	ImageID  string
 	FlavorID string
+	SubnetID string
 }
 
 type VirtualMachineProvisioningPlan struct {
 	VirtualMachine VirtualMachine
 	Image          Image
 	Flavor         Flavor
+	Subnet         *Subnet
 }
 
 type VirtualMachineDetail struct {
