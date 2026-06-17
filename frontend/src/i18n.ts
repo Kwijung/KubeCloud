@@ -1,0 +1,209 @@
+export type Language = "ko" | "en";
+
+export const languageOptions: Array<{ value: Language; label: string }> = [
+  { value: "ko", label: "한국어" },
+  { value: "en", label: "English" },
+];
+
+export const messages = {
+  ko: {
+    privateCloud: "프라이빗 클라우드",
+    navProjects: "프로젝트",
+    navVirtualMachines: "가상 머신",
+    navImages: "이미지",
+    navStorage: "스토리지",
+    pageTitle: "가상 머신",
+    pageSubtitle: "KubeVirt와 CDI 기반의 프로젝트 단위 VM 셀프서비스입니다.",
+    language: "언어",
+    statusChecking: "확인 중",
+    statusOffline: "오프라인",
+    statusOk: "정상",
+    statusDegraded: "저하",
+    metricProjects: "프로젝트",
+    metricVMs: "VM",
+    metricImages: "이미지",
+    metricAPI: "API",
+    projectsTitle: "프로젝트",
+    projectsDescription: "MVP 리소스의 Owner/Member 테넌시 경계입니다.",
+    loadingProjects: "프로젝트를 불러오는 중",
+    projectFallback: "프로젝트",
+    vmsTitleSuffix: "VM",
+    vmsDescription: "프로비저닝 요청을 저장하고 KubeVirt/CDI 실행을 준비합니다.",
+    vmNameAria: "VM 이름",
+    vmNamePlaceholder: "VM 이름",
+    imageAria: "이미지",
+    flavorAria: "플레이버",
+    createVM: "VM 생성",
+    creating: "생성 중",
+    createFailed: "VM 생성 요청 실패",
+    preflight: "사전 체크",
+    preflightDescription: "현재 클러스터가 VM 생성 요청을 받을 수 있는지 확인합니다.",
+    startVM: "시작",
+    stopVM: "중지",
+    console: "콘솔",
+    consoleUnavailable: "콘솔 스트리밍은 아직 연결되지 않았습니다",
+    consoleConnected: "콘솔 연결됨",
+    consoleConnecting: "콘솔 연결 중",
+    consoleDisconnected: "콘솔 연결 종료",
+    consoleClose: "콘솔 닫기",
+    consoleFocusHint: "이 영역을 클릭하고 키보드로 입력하세요.",
+    actionFailed: "VM 작업 요청 실패",
+    deleteVM: "삭제",
+    deleting: "삭제 중",
+    deleteFailed: "VM 삭제 요청 실패",
+    details: "상세",
+    columnName: "이름",
+    columnStatus: "상태",
+    columnImage: "이미지",
+    columnFlavor: "플레이버",
+    columnActions: "작업",
+    noVirtualMachines: "가상 머신이 없습니다",
+    vmDetailsTitle: "VM 상세",
+    vmDetailsDescription: "KubeVirt 런타임 상태와 최근 이벤트입니다.",
+    selectVM: "VM을 선택하세요",
+    runtimeStatus: "런타임 상태",
+    failureReason: "실패 사유",
+    failureMessage: "실패 메시지",
+    vmiPhase: "VMI 단계",
+    vmiIp: "VMI IP",
+    nodeName: "노드",
+    dataVolume: "DataVolume",
+    pvc: "PVC",
+    recentEvents: "최근 이벤트",
+    noEvents: "이벤트가 없습니다",
+    imagesTitle: "이미지",
+    imagesDescription: "프로젝트 범위로 노출되는 CDI 이미지 가져오기입니다.",
+    noImages: "이미지가 없습니다",
+    flavorsTitle: "플레이버",
+    flavorsDescription: "VM 요청에 사용할 쿼터 인지 컴퓨트 옵션입니다.",
+    loadingFlavors: "플레이버를 불러오는 중",
+    vcpu: "vCPU",
+    ram: "GiB 메모리",
+    disk: "GiB 디스크",
+    statusProvisioning: "프로비저닝",
+    statusRunning: "실행 중",
+    statusReady: "준비됨",
+    statusImporting: "가져오는 중",
+    statusStopped: "중지됨",
+    statusMissing: "리소스 없음",
+    statusFailed: "실패",
+  },
+  en: {
+    privateCloud: "Private Cloud",
+    navProjects: "Projects",
+    navVirtualMachines: "Virtual Machines",
+    navImages: "Images",
+    navStorage: "Storage",
+    pageTitle: "Virtual Machines",
+    pageSubtitle: "Project-scoped VM self-service backed by KubeVirt and CDI.",
+    language: "Language",
+    statusChecking: "checking",
+    statusOffline: "offline",
+    statusOk: "ok",
+    statusDegraded: "degraded",
+    metricProjects: "Projects",
+    metricVMs: "VMs",
+    metricImages: "Images",
+    metricAPI: "API",
+    projectsTitle: "Projects",
+    projectsDescription: "Owner/Member tenancy boundary for MVP resources.",
+    loadingProjects: "Loading projects",
+    projectFallback: "Project",
+    vmsTitleSuffix: "VMs",
+    vmsDescription: "Provisioning requests are persisted and prepared for KubeVirt/CDI execution.",
+    vmNameAria: "VM name",
+    vmNamePlaceholder: "vm name",
+    imageAria: "Image",
+    flavorAria: "Flavor",
+    createVM: "Create VM",
+    creating: "Creating",
+    createFailed: "VM create request failed",
+    preflight: "Preflight",
+    preflightDescription: "Checks whether the current cluster can accept VM create requests.",
+    startVM: "Start",
+    stopVM: "Stop",
+    console: "Console",
+    consoleUnavailable: "Console streaming is not wired yet",
+    consoleConnected: "Console connected",
+    consoleConnecting: "Connecting console",
+    consoleDisconnected: "Console disconnected",
+    consoleClose: "Close console",
+    consoleFocusHint: "Click this area and type from your keyboard.",
+    actionFailed: "VM action request failed",
+    deleteVM: "Delete",
+    deleting: "Deleting",
+    deleteFailed: "VM delete request failed",
+    details: "Details",
+    columnName: "Name",
+    columnStatus: "Status",
+    columnImage: "Image",
+    columnFlavor: "Flavor",
+    columnActions: "Actions",
+    noVirtualMachines: "No virtual machines",
+    vmDetailsTitle: "VM Details",
+    vmDetailsDescription: "KubeVirt runtime status and recent events.",
+    selectVM: "Select a VM",
+    runtimeStatus: "Runtime status",
+    failureReason: "Failure reason",
+    failureMessage: "Failure message",
+    vmiPhase: "VMI phase",
+    vmiIp: "VMI IP",
+    nodeName: "Node",
+    dataVolume: "DataVolume",
+    pvc: "PVC",
+    recentEvents: "Recent events",
+    noEvents: "No events",
+    imagesTitle: "Images",
+    imagesDescription: "CDI imports exposed at project scope.",
+    noImages: "No images",
+    flavorsTitle: "Flavors",
+    flavorsDescription: "Quota-aware compute choices for VM requests.",
+    loadingFlavors: "Loading flavors",
+    vcpu: "vCPU",
+    ram: "GiB RAM",
+    disk: "GiB disk",
+    statusProvisioning: "Provisioning",
+    statusRunning: "Running",
+    statusReady: "Ready",
+    statusImporting: "Importing",
+    statusStopped: "Stopped",
+    statusMissing: "Missing",
+    statusFailed: "Failed",
+  },
+} as const;
+
+export function getInitialLanguage(): Language {
+  const stored = window.localStorage.getItem("kloudia-language");
+  return stored === "en" || stored === "ko" ? stored : "ko";
+}
+
+export function saveLanguage(language: Language) {
+  window.localStorage.setItem("kloudia-language", language);
+}
+
+export function translateStatus(status: string, language: Language): string {
+  const normalized = status.toLowerCase();
+  const t = messages[language];
+  switch (normalized) {
+    case "ok":
+      return t.statusOk;
+    case "degraded":
+      return t.statusDegraded;
+    case "provisioning":
+      return t.statusProvisioning;
+    case "running":
+      return t.statusRunning;
+    case "ready":
+      return t.statusReady;
+    case "importing":
+      return t.statusImporting;
+    case "stopped":
+      return t.statusStopped;
+    case "missing":
+      return t.statusMissing;
+    case "failed":
+      return t.statusFailed;
+    default:
+      return status;
+  }
+}

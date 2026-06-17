@@ -1,0 +1,167 @@
+package store
+
+import (
+	"context"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/kloudia/kloudia/backend/internal/domain"
+)
+
+func TestNewPostgresRejectsEmptyDatabaseURL(t *testing.T) {
+	_, err := NewPostgres("")
+	if err == nil {
+		t.Fatal("expected error for empty database URL")
+	}
+}
+
+func TestPostgresAppliesSchemaAndSeedsCatalog(t *testing.T) {
+	databaseURL := os.Getenv("KLOUDIA_STORE_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("KLOUDIA_STORE_TEST_DATABASE_URL is required for store integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	db, err := NewPostgres(databaseURL)
+	if err != nil {
+		t.Fatalf("new postgres: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.ApplySchema(ctx); err != nil {
+		t.Fatalf("apply schema: %v", err)
+	}
+	projects, err := db.ListProjects(ctx)
+	if err != nil {
+		t.Fatalf("list projects: %v", err)
+	}
+	if len(projects) == 0 {
+		t.Fatal("expected seeded projects")
+	}
+	var platformFound bool
+	for _, project := range projects {
+		if project.ID == "platform" {
+			platformFound = true
+			break
+		}
+	}
+	if !platformFound {
+		t.Fatalf("expected platform project in seed data, got %#v", projects)
+	}
+	flavors, err := db.ListFlavors(ctx)
+	if err != nil {
+		t.Fatalf("list flavors: %v", err)
+	}
+	if len(flavors) < 3 {
+		t.Fatalf("expected at least three seeded flavors, got %d", len(flavors))
+	}
+	var small domain.Flavor
+	for _, flavor := range flavors {
+		if flavor.ID == "small" {
+			small = flavor
+			break
+		}
+	}
+	if small.ID == "" {
+		t.Fatalf("expected small flavor in seed data, got %#v", flavors)
+	}
+	if small.CPU != 1 || small.MemoryBytes != 512*1024*1024 || small.RootDiskBytes != 2*1024*1024*1024 {
+		t.Fatalf("unexpected small flavor sizing: %#v", small)
+	}
+	images, err := db.ListImages(ctx, "platform")
+	if err != nil {
+		t.Fatalf("list images: %v", err)
+	}
+	if len(images) == 0 {
+		t.Fatal("expected seeded images for platform project")
+	}
+}
+
+func TestPostgresCreatesVirtualMachineProvisioningPlan(t *testing.T) {
+	databaseURL := os.Getenv("KLOUDIA_STORE_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("KLOUDIA_STORE_TEST_DATABASE_URL is required for store integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	db, err := NewPostgres(databaseURL)
+	if err != nil {
+		t.Fatalf("new postgres: %v", err)
+	}
+	defer db.Close()
+	if err := db.ApplySchema(ctx); err != nil {
+		t.Fatalf("apply schema: %v", err)
+	}
+
+	plan, err := db.CreateVirtualMachine(ctx, "platform", domain.CreateVirtualMachineInput{
+		Name:     "web-01",
+		ImageID:  "platform-cirros",
+		FlavorID: "small",
+	})
+	if err != nil {
+		t.Fatalf("create virtual machine: %v", err)
+	}
+	if plan.VirtualMachine.Status != "Provisioning" {
+		t.Fatalf("expected Provisioning status, got %q", plan.VirtualMachine.Status)
+	}
+	if plan.Image.ID != "platform-cirros" {
+		t.Fatalf("expected platform-cirros image, got %q", plan.Image.ID)
+	}
+	if plan.Flavor.ID != "small" {
+		t.Fatalf("expected small flavor, got %q", plan.Flavor.ID)
+	}
+	vms, err := db.ListVirtualMachines(ctx, "platform")
+	if err != nil {
+		t.Fatalf("list virtual machines: %v", err)
+	}
+	var found bool
+	for _, vm := range vms {
+		if vm.Name == "web-01" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected web-01 in VM list, got %#v", vms)
+	}
+}
+
+func TestPostgresDeletesVirtualMachineRecord(t *testing.T) {
+	databaseURL := os.Getenv("KLOUDIA_STORE_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("KLOUDIA_STORE_TEST_DATABASE_URL is required for store integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	db, err := NewPostgres(databaseURL)
+	if err != nil {
+		t.Fatalf("new postgres: %v", err)
+	}
+	defer db.Close()
+	if err := db.ApplySchema(ctx); err != nil {
+		t.Fatalf("apply schema: %v", err)
+	}
+	plan, err := db.CreateVirtualMachine(ctx, "platform", domain.CreateVirtualMachineInput{
+		Name:     "delete-me",
+		ImageID:  "platform-cirros",
+		FlavorID: "small",
+	})
+	if err != nil {
+		t.Fatalf("create virtual machine: %v", err)
+	}
+	vm, err := db.GetVirtualMachine(ctx, "platform", plan.VirtualMachine.ID)
+	if err != nil {
+		t.Fatalf("get virtual machine: %v", err)
+	}
+	if vm.ID != plan.VirtualMachine.ID {
+		t.Fatalf("expected vm %q, got %q", plan.VirtualMachine.ID, vm.ID)
+	}
+	if err := db.DeleteVirtualMachine(ctx, "platform", plan.VirtualMachine.ID); err != nil {
+		t.Fatalf("delete virtual machine: %v", err)
+	}
+	_, err = db.GetVirtualMachine(ctx, "platform", plan.VirtualMachine.ID)
+	if err == nil {
+		t.Fatal("expected get deleted virtual machine to fail")
+	}
+}

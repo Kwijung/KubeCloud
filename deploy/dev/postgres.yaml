@@ -1,0 +1,78 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kloudia-postgres
+  namespace: kloudia-system
+type: Opaque
+stringData:
+  POSTGRES_DB: kloudia
+  POSTGRES_USER: kloudia
+  POSTGRES_PASSWORD: kloudia
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kloudia-postgres
+  namespace: kloudia-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: test-delete
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kloudia-postgres
+  namespace: kloudia-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kloudia-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kloudia-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: kloudia-postgres
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+              subPath: pgdata
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - kloudia
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: kloudia-postgres
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kloudia-postgres
+  namespace: kloudia-system
+spec:
+  selector:
+    app.kubernetes.io/name: kloudia-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
