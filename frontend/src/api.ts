@@ -58,6 +58,7 @@ export type VirtualMachine = {
   flavorId: string;
   status: string;
   createdAt: string;
+  subnetId?: string;
 };
 
 export type RuntimeEvent = {

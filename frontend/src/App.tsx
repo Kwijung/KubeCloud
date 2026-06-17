@@ -38,6 +38,7 @@ export function App() {
   const [vmName, setVmName] = useState("");
   const [selectedImageId, setSelectedImageId] = useState("");
   const [selectedFlavorId, setSelectedFlavorId] = useState("");
+  const [selectedSubnetId, setSelectedSubnetId] = useState("");
   const [selectedVMId, setSelectedVMId] = useState("");
   const [consoleVMId, setConsoleVMId] = useState("");
   const [consoleOutput, setConsoleOutput] = useState("");
@@ -93,9 +94,11 @@ export function App() {
         name: vmName.trim(),
         imageId: selectedImageId,
         flavorId: selectedFlavorId,
+        subnetId: selectedSubnetId || undefined,
       }),
     onSuccess: () => {
       setVmName("");
+      setSelectedSubnetId("");
       void queryClient.invalidateQueries({ queryKey: ["vms", selectedProjectId] });
       void queryClient.invalidateQueries({ queryKey: ["vm-detail", selectedProjectId] });
     },
@@ -428,6 +431,18 @@ export function App() {
                   </option>
                 ))}
               </select>
+              <select
+                aria-label={t.vmSubnetLabel}
+                value={selectedSubnetId}
+                onChange={(event) => setSelectedSubnetId(event.target.value)}
+              >
+                <option value="">{t.vmSubnetNone}</option>
+                {(subnets.data ?? []).map((subnet) => (
+                  <option key={subnet.id} value={subnet.id}>
+                    {subnet.name} ({subnet.cidr})
+                  </option>
+                ))}
+              </select>
               <button className="primary-action" disabled={!canCreateVM || createVM.isPending}>
                 <Play size={16} />
                 {createVM.isPending ? t.creating : t.createVM}
@@ -545,6 +560,10 @@ export function App() {
                   <strong>
                     {selectedVMDetail.data.pvcPhase || "-"} {selectedVMDetail.data.pvcCapacity}
                   </strong>
+                </div>
+                <div>
+                  <span>{t.vmSubnetLabel}</span>
+                  <strong>{selectedVMDetail.data.virtualMachine.subnetId || t.vmSubnetNone}</strong>
                 </div>
               </div>
               <div className="events-list">
