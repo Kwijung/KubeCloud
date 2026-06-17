@@ -20,6 +20,26 @@ export type Flavor = {
   enabled: boolean;
 };
 
+export type Network = {
+  id: string;
+  projectId: string;
+  name: string;
+  status: string;
+  createdAt: string;
+};
+
+export type Subnet = {
+  id: string;
+  networkId: string;
+  projectId: string;
+  name: string;
+  cidr: string;
+  gateway: string;
+  type: string; // "private" | "public"
+  status: string;
+  createdAt: string;
+};
+
 export type Image = {
   id: string;
   projectId: string;
@@ -77,6 +97,7 @@ export type CreateVirtualMachineRequest = {
   name: string;
   imageId: string;
   flavorId: string;
+  subnetId?: string;
 };
 
 type ListResponse<T> = {
@@ -97,6 +118,70 @@ export async function fetchProjects(): Promise<Project[]> {
 export async function fetchFlavors(): Promise<Flavor[]> {
   const response = await getJSON<ListResponse<Flavor>>("/api/v1/flavors");
   return response.data;
+}
+
+export async function fetchNetworks(projectId: string): Promise<Network[]> {
+  const response = await getJSON<ListResponse<Network>>(`/api/v1/projects/${projectId}/networks`);
+  return response.data;
+}
+
+export async function createNetwork(projectId: string, name: string): Promise<Network> {
+  const response = await fetch(`${apiBaseUrl}/api/v1/projects/${projectId}/networks`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!response.ok) {
+    throw new Error(`network create failed: ${response.status}`);
+  }
+  const body = (await response.json()) as { data: Network };
+  return body.data;
+}
+
+export async function deleteNetwork(projectId: string, networkId: string): Promise<void> {
+  const response = await fetch(`${apiBaseUrl}/api/v1/projects/${projectId}/networks/${networkId}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw new Error(`network delete failed: ${response.status}`);
+  }
+}
+
+export async function fetchSubnets(projectId: string, networkId: string): Promise<Subnet[]> {
+  const response = await getJSON<ListResponse<Subnet>>(
+    `/api/v1/projects/${projectId}/networks/${networkId}/subnets`,
+  );
+  return response.data;
+}
+
+export async function createSubnet(
+  projectId: string,
+  networkId: string,
+  request: { name: string; cidr: string; type: string; gateway?: string },
+): Promise<Subnet> {
+  const response = await fetch(
+    `${apiBaseUrl}/api/v1/projects/${projectId}/networks/${networkId}/subnets`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`subnet create failed: ${response.status}`);
+  }
+  const body = (await response.json()) as { data: Subnet };
+  return body.data;
+}
+
+export async function deleteSubnet(projectId: string, networkId: string, subnetId: string): Promise<void> {
+  const response = await fetch(
+    `${apiBaseUrl}/api/v1/projects/${projectId}/networks/${networkId}/subnets/${subnetId}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) {
+    throw new Error(`subnet delete failed: ${response.status}`);
+  }
 }
 
 export async function fetchImages(projectId: string): Promise<Image[]> {
