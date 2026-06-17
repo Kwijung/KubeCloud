@@ -19,6 +19,14 @@ type Store interface {
 	CreateVirtualMachine(ctx context.Context, projectID string, input domain.CreateVirtualMachineInput) (domain.VirtualMachineProvisioningPlan, error)
 	GetVirtualMachine(ctx context.Context, projectID string, vmID string) (domain.VirtualMachine, error)
 	DeleteVirtualMachine(ctx context.Context, projectID string, vmID string) error
+	ListNetworks(ctx context.Context, projectID string) ([]domain.Network, error)
+	GetNetwork(ctx context.Context, projectID string, networkID string) (domain.Network, error)
+	CreateNetwork(ctx context.Context, projectID string, name string) (domain.Network, error)
+	DeleteNetwork(ctx context.Context, projectID string, networkID string) (domain.Network, error)
+	ListSubnets(ctx context.Context, projectID string, networkID string) ([]domain.Subnet, error)
+	GetSubnet(ctx context.Context, projectID string, subnetID string) (domain.Subnet, error)
+	CreateSubnet(ctx context.Context, projectID string, networkID string, name string, cidr string, subnetType string, gateway string) (domain.Subnet, error)
+	DeleteSubnet(ctx context.Context, projectID string, subnetID string) (domain.Subnet, error)
 }
 
 type Provisioner interface {
@@ -83,6 +91,29 @@ func (noopConsoleStreamer) StreamVirtualMachineConsole(http.ResponseWriter, *htt
 	return nil
 }
 
+type NetworkProvisioner interface {
+	CreateNetwork(ctx context.Context, network domain.Network) error
+	DeleteNetwork(ctx context.Context, network domain.Network) error
+	CreateSubnet(ctx context.Context, ovnVPCName string, subnet domain.Subnet) error
+	DeleteSubnet(ctx context.Context, ovnVPCName string, subnet domain.Subnet) error
+}
+
+type noopNetworkProvisioner struct{}
+
+func (noopNetworkProvisioner) CreateNetwork(context.Context, domain.Network) error  { return nil }
+func (noopNetworkProvisioner) DeleteNetwork(context.Context, domain.Network) error  { return nil }
+func (noopNetworkProvisioner) CreateSubnet(context.Context, string, domain.Subnet) error { return nil }
+func (noopNetworkProvisioner) DeleteSubnet(context.Context, string, domain.Subnet) error { return nil }
+
+type Dependencies struct {
+	Version            string
+	Store              Store
+	Provisioner        Provisioner
+	StatusReader       StatusReader
+	ConsoleStreamer     ConsoleStreamer
+	NetworkProvisioner NetworkProvisioner
+}
+
 func NewRouter(version string, store Store) http.Handler {
 	return NewRouterWithProvisioner(version, store, noopProvisioner{})
 }
@@ -96,6 +127,35 @@ func NewRouterWithProvisionerAndStatusReader(version string, store Store, provis
 }
 
 func NewRouterWithProvisionerStatusReaderAndConsoleStreamer(version string, store Store, provisioner Provisioner, statusReader StatusReader, consoleStreamer ConsoleStreamer) http.Handler {
+	return NewRouterWithDependencies(Dependencies{
+		Version:        version,
+		Store:          store,
+		Provisioner:    provisioner,
+		StatusReader:   statusReader,
+		ConsoleStreamer: consoleStreamer,
+	})
+}
+
+func NewRouterWithDependencies(deps Dependencies) http.Handler {
+	version := deps.Version
+	store := deps.Store
+	provisioner := deps.Provisioner
+	statusReader := deps.StatusReader
+	consoleStreamer := deps.ConsoleStreamer
+	networkProvisioner := deps.NetworkProvisioner
+	if provisioner == nil {
+		provisioner = noopProvisioner{}
+	}
+	if statusReader == nil {
+		statusReader = noopStatusReader{}
+	}
+	if consoleStreamer == nil {
+		consoleStreamer = noopConsoleStreamer{}
+	}
+	if networkProvisioner == nil {
+		networkProvisioner = noopNetworkProvisioner{}
+	}
+	_ = networkProvisioner // used in future network routes (Tasks 13-14)
 	router := chi.NewRouter()
 	router.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"http://localhost:5173"},
