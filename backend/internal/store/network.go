@@ -1,8 +1,13 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"net/netip"
+	"strings"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/kloudia/kloudia/backend/internal/domain"
 )
 
 var (
@@ -47,4 +52,83 @@ func cidrsOverlap(a, b string) bool {
 		return false
 	}
 	return pa.Overlaps(pb)
+}
+
+func makeResourceID(parts ...string) string {
+	id := strings.ToLower(strings.TrimSpace(strings.Join(parts, "-")))
+	id = vmNameSanitizer.ReplaceAllString(id, "-")
+	id = strings.Trim(id, "-")
+	if id == "" {
+		return "net"
+	}
+	return id
+}
+
+func (p *Postgres) ListNetworks(ctx context.Context, projectID string) ([]domain.Network, error) {
+	rows, err := p.pool.Query(ctx, `
+SELECT id, project_id, name, ovn_vpc_name, status, created_at
+FROM networks
+WHERE project_id = $1
+ORDER BY created_at DESC, name`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var networks []domain.Network
+	for rows.Next() {
+		var n domain.Network
+		if err := rows.Scan(&n.ID, &n.ProjectID, &n.Name, &n.OVNVPCName, &n.Status, &n.CreatedAt); err != nil {
+			return nil, err
+		}
+		networks = append(networks, n)
+	}
+	return networks, rows.Err()
+}
+
+func (p *Postgres) GetNetwork(ctx context.Context, projectID string, networkID string) (domain.Network, error) {
+	var n domain.Network
+	err := p.pool.QueryRow(ctx, `
+SELECT id, project_id, name, ovn_vpc_name, status, created_at
+FROM networks
+WHERE project_id = $1 AND id = $2`, projectID, networkID).
+		Scan(&n.ID, &n.ProjectID, &n.Name, &n.OVNVPCName, &n.Status, &n.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Network{}, ErrNotFound
+	}
+	return n, err
+}
+
+func (p *Postgres) CreateNetwork(ctx context.Context, projectID string, name string) (domain.Network, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return domain.Network{}, errors.New("network name is required")
+	}
+	id := makeResourceID(projectID, name)
+	ovnVPCName := "kloudia-vpc-" + id
+	var n domain.Network
+	err := p.pool.QueryRow(ctx, `
+INSERT INTO networks (id, project_id, name, ovn_vpc_name, status)
+VALUES ($1, $2, $3, $4, 'Ready')
+RETURNING id, project_id, name, ovn_vpc_name, status, created_at`, id, projectID, name, ovnVPCName).
+		Scan(&n.ID, &n.ProjectID, &n.Name, &n.OVNVPCName, &n.Status, &n.CreatedAt)
+	return n, err
+}
+
+func (p *Postgres) DeleteNetwork(ctx context.Context, projectID string, networkID string) (domain.Network, error) {
+	n, err := p.GetNetwork(ctx, projectID, networkID)
+	if err != nil {
+		return domain.Network{}, err
+	}
+	var subnetCount int
+	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM subnets WHERE network_id = $1`, networkID).Scan(&subnetCount); err != nil {
+		return domain.Network{}, err
+	}
+	if subnetCount > 0 {
+		return domain.Network{}, ErrNetworkInUse
+	}
+	if _, err := p.pool.Exec(ctx, `DELETE FROM networks WHERE id = $1`, networkID); err != nil {
+		return domain.Network{}, err
+	}
+	return n, nil
 }
