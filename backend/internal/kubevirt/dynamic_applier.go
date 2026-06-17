@@ -34,17 +34,23 @@ func (a *DynamicApplier) Apply(ctx context.Context, resource map[string]any) err
 	if a == nil || a.client == nil {
 		return fmt.Errorf("dynamic client is not configured")
 	}
-	gvr, err := resourceMapping(resource)
+	gvr, namespaced, err := resourceMapping(resource)
 	if err != nil {
 		return err
 	}
 	obj := &unstructured.Unstructured{Object: resource}
 	name := obj.GetName()
-	namespace := obj.GetNamespace()
-	if name == "" || namespace == "" {
-		return fmt.Errorf("resource %s requires metadata.name and metadata.namespace", gvr.Resource)
+	if name == "" {
+		return fmt.Errorf("resource %s requires metadata.name", gvr.Resource)
 	}
-	resourceClient := a.client.Resource(gvr).Namespace(namespace)
+	var resourceClient dynamic.ResourceInterface = a.client.Resource(gvr)
+	if namespaced {
+		namespace := obj.GetNamespace()
+		if namespace == "" {
+			return fmt.Errorf("resource %s requires metadata.namespace", gvr.Resource)
+		}
+		resourceClient = a.client.Resource(gvr).Namespace(namespace)
+	}
 	created, err := resourceClient.Create(ctx, obj, v1.CreateOptions{})
 	if err == nil {
 		obj.SetResourceVersion(created.GetResourceVersion())
@@ -66,17 +72,24 @@ func (a *DynamicApplier) Delete(ctx context.Context, resource map[string]any) er
 	if a == nil || a.client == nil {
 		return fmt.Errorf("dynamic client is not configured")
 	}
-	gvr, err := resourceMapping(resource)
+	gvr, namespaced, err := resourceMapping(resource)
 	if err != nil {
 		return err
 	}
 	obj := &unstructured.Unstructured{Object: resource}
 	name := obj.GetName()
-	namespace := obj.GetNamespace()
-	if name == "" || namespace == "" {
-		return fmt.Errorf("resource %s requires metadata.name and metadata.namespace", gvr.Resource)
+	if name == "" {
+		return fmt.Errorf("resource %s requires metadata.name", gvr.Resource)
 	}
-	err = a.client.Resource(gvr).Namespace(namespace).Delete(ctx, name, v1.DeleteOptions{})
+	var resourceClient dynamic.ResourceInterface = a.client.Resource(gvr)
+	if namespaced {
+		namespace := obj.GetNamespace()
+		if namespace == "" {
+			return fmt.Errorf("resource %s requires metadata.namespace", gvr.Resource)
+		}
+		resourceClient = a.client.Resource(gvr).Namespace(namespace)
+	}
+	err = resourceClient.Delete(ctx, name, v1.DeleteOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
@@ -105,15 +118,27 @@ func buildRESTConfig(kubeconfigPath string) (*rest.Config, error) {
 	return clientcmd.BuildConfigFromFlags("", clientcmd.RecommendedHomeFile)
 }
 
-func resourceMapping(resource map[string]any) (schema.GroupVersionResource, error) {
+func resourceMapping(resource map[string]any) (schema.GroupVersionResource, bool, error) {
 	apiVersion, _ := resource["apiVersion"].(string)
 	kind, _ := resource["kind"].(string)
 	switch {
 	case apiVersion == "cdi.kubevirt.io/v1beta1" && kind == "DataVolume":
-		return schema.GroupVersionResource{Group: "cdi.kubevirt.io", Version: "v1beta1", Resource: "datavolumes"}, nil
+		return schema.GroupVersionResource{Group: "cdi.kubevirt.io", Version: "v1beta1", Resource: "datavolumes"}, true, nil
 	case apiVersion == "kubevirt.io/v1" && kind == "VirtualMachine":
-		return schema.GroupVersionResource{Group: "kubevirt.io", Version: "v1", Resource: "virtualmachines"}, nil
+		return schema.GroupVersionResource{Group: "kubevirt.io", Version: "v1", Resource: "virtualmachines"}, true, nil
+	case apiVersion == "kubeovn.io/v1" && kind == "Vpc":
+		return schema.GroupVersionResource{Group: "kubeovn.io", Version: "v1", Resource: "vpcs"}, false, nil
+	case apiVersion == "kubeovn.io/v1" && kind == "Subnet":
+		return schema.GroupVersionResource{Group: "kubeovn.io", Version: "v1", Resource: "subnets"}, false, nil
+	case apiVersion == "k8s.cni.cncf.io/v1" && kind == "NetworkAttachmentDefinition":
+		return schema.GroupVersionResource{Group: "k8s.cni.cncf.io", Version: "v1", Resource: "network-attachment-definitions"}, true, nil
+	case apiVersion == "kubeovn.io/v1" && kind == "VpcNatGateway":
+		return schema.GroupVersionResource{Group: "kubeovn.io", Version: "v1", Resource: "vpc-nat-gateways"}, false, nil
+	case apiVersion == "kubeovn.io/v1" && kind == "IptablesEIP":
+		return schema.GroupVersionResource{Group: "kubeovn.io", Version: "v1", Resource: "iptables-eips"}, false, nil
+	case apiVersion == "kubeovn.io/v1" && kind == "IptablesSnatRule":
+		return schema.GroupVersionResource{Group: "kubeovn.io", Version: "v1", Resource: "iptables-snat-rules"}, false, nil
 	default:
-		return schema.GroupVersionResource{}, fmt.Errorf("unsupported resource %s %s", apiVersion, kind)
+		return schema.GroupVersionResource{}, false, fmt.Errorf("unsupported resource %s %s", apiVersion, kind)
 	}
 }

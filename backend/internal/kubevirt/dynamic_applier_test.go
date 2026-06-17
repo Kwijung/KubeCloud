@@ -3,7 +3,7 @@ package kubevirt
 import "testing"
 
 func TestResourceMappingForKubeVirtResources(t *testing.T) {
-	dv, err := resourceMapping(map[string]any{
+	dv, namespaced, err := resourceMapping(map[string]any{
 		"apiVersion": "cdi.kubevirt.io/v1beta1",
 		"kind":       "DataVolume",
 	})
@@ -13,8 +13,11 @@ func TestResourceMappingForKubeVirtResources(t *testing.T) {
 	if dv.Group != "cdi.kubevirt.io" || dv.Version != "v1beta1" || dv.Resource != "datavolumes" {
 		t.Fatalf("unexpected DataVolume mapping: %#v", dv)
 	}
+	if !namespaced {
+		t.Fatalf("DataVolume should be namespaced")
+	}
 
-	vm, err := resourceMapping(map[string]any{
+	vm, namespaced, err := resourceMapping(map[string]any{
 		"apiVersion": "kubevirt.io/v1",
 		"kind":       "VirtualMachine",
 	})
@@ -24,10 +27,13 @@ func TestResourceMappingForKubeVirtResources(t *testing.T) {
 	if vm.Group != "kubevirt.io" || vm.Version != "v1" || vm.Resource != "virtualmachines" {
 		t.Fatalf("unexpected VirtualMachine mapping: %#v", vm)
 	}
+	if !namespaced {
+		t.Fatalf("VirtualMachine should be namespaced")
+	}
 }
 
 func TestResourceMappingRejectsUnsupportedResource(t *testing.T) {
-	_, err := resourceMapping(map[string]any{
+	_, _, err := resourceMapping(map[string]any{
 		"apiVersion": "v1",
 		"kind":       "Pod",
 	})
