@@ -257,6 +257,7 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			Name     string `json:"name"`
 			ImageID  string `json:"imageId"`
 			FlavorID string `json:"flavorId"`
+			SubnetID string `json:"subnetId"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "request body must be valid JSON")
@@ -270,6 +271,7 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			Name:     request.Name,
 			ImageID:  request.ImageID,
 			FlavorID: request.FlavorID,
+			SubnetID: request.SubnetID,
 		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "VM_CREATE_FAILED", "failed to create virtual machine")

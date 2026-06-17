@@ -19,6 +19,7 @@ type fakeCatalogStore struct {
 	images          []domain.Image
 	vms             []domain.VirtualMachine
 	createdPlan     domain.VirtualMachineProvisioningPlan
+	createInputs    []domain.CreateVirtualMachineInput
 	networks        []domain.Network
 	subnets         []domain.Subnet
 	createSubnetErr error
@@ -98,7 +99,8 @@ func (s fakeCatalogStore) ListVirtualMachines(_ context.Context, projectID strin
 	return vms, nil
 }
 
-func (s fakeCatalogStore) CreateVirtualMachine(_ context.Context, projectID string, input domain.CreateVirtualMachineInput) (domain.VirtualMachineProvisioningPlan, error) {
+func (s *fakeCatalogStore) CreateVirtualMachine(_ context.Context, projectID string, input domain.CreateVirtualMachineInput) (domain.VirtualMachineProvisioningPlan, error) {
+	s.createInputs = append(s.createInputs, input)
 	plan := s.createdPlan
 	if plan.VirtualMachine.ID == "" {
 		plan.VirtualMachine = domain.VirtualMachine{

@@ -137,6 +137,24 @@ func TestDeleteVirtualMachineDeletesRuntimeResourcesThenStoreRecord(t *testing.T
 	}
 }
 
+func TestCreateVirtualMachinePassesSubnetID(t *testing.T) {
+	store := &fakeCatalogStore{}
+	provisioner := &recordingProvisioner{}
+	router := NewRouterWithProvisioner("test", store, provisioner)
+	body := bytes.NewBufferString(`{"name":"web-09","imageId":"platform-cirros","flavorId":"small","subnetId":"platform-app-web"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/platform/vms", body)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(store.createInputs) != 1 || store.createInputs[0].SubnetID != "platform-app-web" {
+		t.Fatalf("expected subnetId to reach the store, got %#v", store.createInputs)
+	}
+}
+
 func TestStartAndStopVirtualMachineCallsProvisioner(t *testing.T) {
 	store := &fakeCatalogStore{
 		vms: []domain.VirtualMachine{{
