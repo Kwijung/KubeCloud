@@ -116,18 +116,39 @@ RETURNING id, project_id, name, ovn_vpc_name, status, created_at`, id, projectID
 }
 
 func (p *Postgres) DeleteNetwork(ctx context.Context, projectID string, networkID string) (domain.Network, error) {
-	n, err := p.GetNetwork(ctx, projectID, networkID)
+	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return domain.Network{}, err
 	}
+	defer tx.Rollback(ctx)
+
+	var n domain.Network
+	err = tx.QueryRow(ctx, `
+SELECT id, project_id, name, ovn_vpc_name, status, created_at
+FROM networks
+WHERE project_id = $1 AND id = $2
+FOR UPDATE`, projectID, networkID).
+		Scan(&n.ID, &n.ProjectID, &n.Name, &n.OVNVPCName, &n.Status, &n.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Network{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.Network{}, err
+	}
+
 	var subnetCount int
-	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM subnets WHERE network_id = $1`, networkID).Scan(&subnetCount); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM subnets WHERE network_id = $1`, networkID).Scan(&subnetCount); err != nil {
 		return domain.Network{}, err
 	}
 	if subnetCount > 0 {
 		return domain.Network{}, ErrNetworkInUse
 	}
-	if _, err := p.pool.Exec(ctx, `DELETE FROM networks WHERE id = $1`, networkID); err != nil {
+
+	if _, err := tx.Exec(ctx, `DELETE FROM networks WHERE id = $1`, networkID); err != nil {
+		return domain.Network{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
 		return domain.Network{}, err
 	}
 	return n, nil
