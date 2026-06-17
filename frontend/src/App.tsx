@@ -198,6 +198,10 @@ export function App() {
     }
   }, [selectedVMId, virtualMachines.data]);
 
+  useEffect(() => {
+    setSelectedNetworkId("");
+  }, [selectedProjectId]);
+
   const isCatalogLoading = projects.isLoading || flavors.isLoading || images.isLoading || virtualMachines.isLoading;
   const projectCount = projects.data?.length ?? 0;
   const vmCount = virtualMachines.data?.length ?? 0;
@@ -583,8 +587,8 @@ export function App() {
                 {createNetworkMutation.isPending ? t.creating : t.networkCreate}
               </button>
             </form>
-            {createNetworkMutation.isError && <div className="error-row">{t.createFailed}</div>}
-            {deleteNetworkMutation.isError && <div className="error-row">{t.deleteFailed}</div>}
+            {createNetworkMutation.isError && <div className="error-row">{t.networkActionFailed}</div>}
+            {deleteNetworkMutation.isError && <div className="error-row">{t.networkActionFailed}</div>}
             <div className="compact-list">
               {(networks.data ?? []).map((network) => (
                 <div
@@ -651,8 +655,8 @@ export function App() {
                     {createSubnetMutation.isPending ? t.creating : t.subnetCreate}
                   </button>
                 </form>
-                {createSubnetMutation.isError && <div className="error-row">{t.createFailed}</div>}
-                {deleteSubnetMutation.isError && <div className="error-row">{t.deleteFailed}</div>}
+                {createSubnetMutation.isError && <div className="error-row">{t.subnetActionFailed}</div>}
+                {deleteSubnetMutation.isError && <div className="error-row">{t.subnetActionFailed}</div>}
                 <div className="table">
                   <div className="table-row table-head">
                     <span>{t.subnetNameLabel}</span>

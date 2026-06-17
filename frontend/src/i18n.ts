@@ -103,6 +103,8 @@ export const messages = {
     subnetEmpty: "서브넷이 없습니다",
     vmSubnetLabel: "서브넷",
     vmSubnetNone: "없음",
+    networkActionFailed: "네트워크 요청 실패",
+    subnetActionFailed: "서브넷 요청 실패",
   },
   en: {
     privateCloud: "Private Cloud",
@@ -201,6 +203,8 @@ export const messages = {
     subnetEmpty: "No subnets yet",
     vmSubnetLabel: "Subnet",
     vmSubnetNone: "None",
+    networkActionFailed: "Network request failed",
+    subnetActionFailed: "Subnet request failed",
   },
 } as const;
 
