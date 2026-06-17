@@ -74,3 +74,28 @@ func (p *recordingNetworkProvisioner) DeleteSubnet(_ context.Context, _ string, 
 	p.deletedSubnets = append(p.deletedSubnets, s)
 	return nil
 }
+
+func TestCreateSubnetValidatesTypeAndProvisions(t *testing.T) {
+	store := &fakeCatalogStore{networks: []domain.Network{{ID: "platform-app", ProjectID: "platform", Name: "app", OVNVPCName: "kloudia-vpc-platform-app", Status: "Ready"}}}
+	np := &recordingNetworkProvisioner{}
+	router := NewRouterWithDependencies(Dependencies{Version: "test", Store: store, NetworkProvisioner: np})
+
+	ok := bytes.NewBufferString(`{"name":"web","cidr":"10.0.0.0/24","type":"private"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/platform/networks/platform-app/subnets", ok)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(np.createdSubnets) != 1 {
+		t.Fatalf("expected provisioner CreateSubnet once, got %d", len(np.createdSubnets))
+	}
+
+	bad := bytes.NewBufferString(`{"name":"web2","cidr":"10.0.1.0/24","type":"weird"}`)
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/projects/platform/networks/platform-app/subnets", bad)
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid type, got %d", rec2.Code)
+	}
+}

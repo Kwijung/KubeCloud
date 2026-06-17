@@ -431,6 +431,92 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
+	router.Get("/api/v1/projects/{projectID}/networks/{networkID}/subnets", func(w http.ResponseWriter, r *http.Request) {
+		subnets, err := store.ListSubnets(r.Context(), chi.URLParam(r, "projectID"), chi.URLParam(r, "networkID"))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "SUBNETS_UNAVAILABLE", "failed to list subnets")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": subnets})
+	})
+
+	router.Post("/api/v1/projects/{projectID}/networks/{networkID}/subnets", func(w http.ResponseWriter, r *http.Request) {
+		projectID := chi.URLParam(r, "projectID")
+		networkID := chi.URLParam(r, "networkID")
+		var request struct {
+			Name    string `json:"name"`
+			CIDR    string `json:"cidr"`
+			Type    string `json:"type"`
+			Gateway string `json:"gateway"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "request body must be valid JSON")
+			return
+		}
+		if request.Name == "" || request.CIDR == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_SUBNET_REQUEST", "name and cidr are required")
+			return
+		}
+		if request.Type == "" {
+			request.Type = "private"
+		}
+		if request.Type != "private" && request.Type != "public" {
+			writeError(w, http.StatusBadRequest, "SUBNET_TYPE_INVALID", "type must be private or public")
+			return
+		}
+		network, err := store.GetNetwork(r.Context(), projectID, networkID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "NETWORK_NOT_FOUND", "network was not found")
+			return
+		}
+		subnet, err := store.CreateSubnet(r.Context(), projectID, networkID, request.Name, request.CIDR, request.Type, request.Gateway)
+		if err != nil {
+			switch {
+			case errors.Is(err, storepkg.ErrSubnetCIDRInvalid):
+				writeError(w, http.StatusBadRequest, "SUBNET_CIDR_INVALID", "subnet cidr is invalid")
+			case errors.Is(err, storepkg.ErrSubnetCIDROverlap):
+				writeError(w, http.StatusConflict, "SUBNET_CIDR_OVERLAP", "subnet cidr overlaps an existing subnet in this vpc")
+			default:
+				writeError(w, http.StatusInternalServerError, "SUBNET_CREATE_FAILED", "failed to create subnet")
+			}
+			return
+		}
+		if err := networkProvisioner.CreateSubnet(r.Context(), network.OVNVPCName, subnet); err != nil {
+			writeError(w, http.StatusBadGateway, "SUBNET_PROVISION_FAILED", "failed to provision subnet")
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"data": subnet})
+	})
+
+	router.Delete("/api/v1/projects/{projectID}/networks/{networkID}/subnets/{subnetID}", func(w http.ResponseWriter, r *http.Request) {
+		projectID := chi.URLParam(r, "projectID")
+		networkID := chi.URLParam(r, "networkID")
+		subnetID := chi.URLParam(r, "subnetID")
+		network, err := store.GetNetwork(r.Context(), projectID, networkID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "NETWORK_NOT_FOUND", "network was not found")
+			return
+		}
+		subnet, err := store.GetSubnet(r.Context(), projectID, subnetID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "SUBNET_NOT_FOUND", "subnet was not found")
+			return
+		}
+		if _, err := store.DeleteSubnet(r.Context(), projectID, subnetID); err != nil {
+			if errors.Is(err, storepkg.ErrSubnetInUse) {
+				writeError(w, http.StatusConflict, "SUBNET_IN_USE", "subnet still has virtual machines attached")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "SUBNET_DELETE_FAILED", "failed to delete subnet")
+			return
+		}
+		if err := networkProvisioner.DeleteSubnet(r.Context(), network.OVNVPCName, subnet); err != nil {
+			writeError(w, http.StatusBadGateway, "SUBNET_DEPROVISION_FAILED", "failed to delete subnet resources")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	return router
 }
 
