@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kloudia/kloudia/backend/internal/domain"
 )
@@ -299,6 +300,9 @@ SELECT id, network_id, project_id, name, cidr, gateway, type, ovn_subnet_name, n
 FROM subnets
 WHERE id = $1 AND project_id = $2`, subnetID, projectID).
 			Scan(&s.ID, &s.NetworkID, &s.ProjectID, &s.Name, &s.CIDR, &s.Gateway, &s.Type, &s.OVNSubnetName, &s.NADName, &s.Status, &s.CreatedAt); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.VirtualMachineProvisioningPlan{}, ErrNotFound
+			}
 			return domain.VirtualMachineProvisioningPlan{}, err
 		}
 		subnet = &s

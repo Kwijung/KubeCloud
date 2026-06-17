@@ -274,6 +274,10 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			SubnetID: request.SubnetID,
 		})
 		if err != nil {
+			if errors.Is(err, storepkg.ErrNotFound) {
+				writeError(w, http.StatusBadRequest, "INVALID_SUBNET", "subnetId not found in this project")
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "VM_CREATE_FAILED", "failed to create virtual machine")
 			return
 		}
@@ -387,6 +391,7 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 	})
 
 	router.Post("/api/v1/projects/{projectID}/networks", func(w http.ResponseWriter, r *http.Request) {
+		projectID := chi.URLParam(r, "projectID")
 		var request struct {
 			Name string `json:"name"`
 		}
@@ -398,12 +403,13 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			writeError(w, http.StatusBadRequest, "INVALID_NETWORK_REQUEST", "name is required")
 			return
 		}
-		network, err := store.CreateNetwork(r.Context(), chi.URLParam(r, "projectID"), request.Name)
+		network, err := store.CreateNetwork(r.Context(), projectID, request.Name)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "NETWORK_CREATE_FAILED", "failed to create network")
 			return
 		}
 		if err := networkProvisioner.CreateNetwork(r.Context(), network); err != nil {
+			_, _ = store.DeleteNetwork(r.Context(), projectID, network.ID)
 			writeError(w, http.StatusBadGateway, "NETWORK_PROVISION_FAILED", "failed to provision network")
 			return
 		}
@@ -497,6 +503,7 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			return
 		}
 		if err := networkProvisioner.CreateSubnet(r.Context(), network.OVNVPCName, subnet); err != nil {
+			_, _ = store.DeleteSubnet(r.Context(), projectID, subnet.ID)
 			writeError(w, http.StatusBadGateway, "SUBNET_PROVISION_FAILED", "failed to provision subnet")
 			return
 		}

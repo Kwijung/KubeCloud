@@ -193,3 +193,29 @@ func TestStartAndStopVirtualMachineCallsProvisioner(t *testing.T) {
 		t.Fatalf("expected stop provisioner call, got %#v", provisioner.stoppedVMs)
 	}
 }
+
+func TestCreateVirtualMachineUnknownSubnetReturns400(t *testing.T) {
+	store := &fakeCatalogStore{}
+	provisioner := &recordingProvisioner{}
+	router := NewRouterWithProvisioner("test", store, provisioner)
+	body := bytes.NewBufferString(`{"name":"web-99","imageId":"platform-cirros","flavorId":"small","subnetId":"missing"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/platform/vms", body)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var respBody struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &respBody); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if respBody.Error.Code != "INVALID_SUBNET" {
+		t.Fatalf("expected INVALID_SUBNET, got %q", respBody.Error.Code)
+	}
+}

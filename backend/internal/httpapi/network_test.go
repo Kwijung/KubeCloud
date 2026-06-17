@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -57,9 +58,13 @@ type recordingNetworkProvisioner struct {
 	deletedNetworks []domain.Network
 	createdSubnets  []domain.Subnet
 	deletedSubnets  []domain.Subnet
+	createErr       error
 }
 
 func (p *recordingNetworkProvisioner) CreateNetwork(_ context.Context, n domain.Network) error {
+	if p.createErr != nil {
+		return p.createErr
+	}
 	p.createdNetworks = append(p.createdNetworks, n)
 	return nil
 }
@@ -68,6 +73,9 @@ func (p *recordingNetworkProvisioner) DeleteNetwork(_ context.Context, n domain.
 	return nil
 }
 func (p *recordingNetworkProvisioner) CreateSubnet(_ context.Context, _ string, s domain.Subnet) error {
+	if p.createErr != nil {
+		return p.createErr
+	}
 	p.createdSubnets = append(p.createdSubnets, s)
 	return nil
 }
@@ -166,5 +174,43 @@ func TestCreateSubnetCIDROverlapReturns409(t *testing.T) {
 	}
 	if respBody.Error.Code != "SUBNET_CIDR_OVERLAP" {
 		t.Fatalf("expected SUBNET_CIDR_OVERLAP, got %q", respBody.Error.Code)
+	}
+}
+
+func TestCreateNetworkRollsBackOnProvisionFailure(t *testing.T) {
+	store := &fakeCatalogStore{}
+	np := &recordingNetworkProvisioner{createErr: errors.New("provisioner down")}
+	router := NewRouterWithDependencies(Dependencies{Version: "test", Store: store, NetworkProvisioner: np})
+	body := bytes.NewBufferString(`{"name":"app"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/platform/networks", body)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(store.networks) != 0 {
+		t.Fatalf("expected network record rolled back, got %d networks", len(store.networks))
+	}
+}
+
+func TestCreateSubnetRollsBackOnProvisionFailure(t *testing.T) {
+	store := &fakeCatalogStore{
+		networks: []domain.Network{{ID: "platform-app", ProjectID: "platform", Name: "app", OVNVPCName: "kloudia-vpc-platform-app", Status: "Ready"}},
+	}
+	np := &recordingNetworkProvisioner{createErr: errors.New("provisioner down")}
+	router := NewRouterWithDependencies(Dependencies{Version: "test", Store: store, NetworkProvisioner: np})
+	body := bytes.NewBufferString(`{"name":"web","cidr":"10.0.0.0/24","type":"private"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/platform/networks/platform-app/subnets", body)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(store.subnets) != 0 {
+		t.Fatalf("expected subnet record rolled back, got %d subnets", len(store.subnets))
 	}
 }

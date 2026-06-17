@@ -101,6 +101,9 @@ func (s fakeCatalogStore) ListVirtualMachines(_ context.Context, projectID strin
 
 func (s *fakeCatalogStore) CreateVirtualMachine(_ context.Context, projectID string, input domain.CreateVirtualMachineInput) (domain.VirtualMachineProvisioningPlan, error) {
 	s.createInputs = append(s.createInputs, input)
+	if input.SubnetID == "missing" {
+		return domain.VirtualMachineProvisioningPlan{}, storepkg.ErrNotFound
+	}
 	plan := s.createdPlan
 	if plan.VirtualMachine.ID == "" {
 		plan.VirtualMachine = domain.VirtualMachine{
