@@ -51,6 +51,12 @@ curl -X POST http://localhost:8080/api/v1/projects/platform/vms \
   -H 'Content-Type: application/json' \
   -d '{"name":"api-01","imageId":"platform-cirros","flavorId":"small"}'
 curl -X DELETE http://localhost:8080/api/v1/projects/platform/vms/platform-api-01
+curl http://localhost:8080/api/v1/projects/platform/networks
+curl -X POST http://localhost:8080/api/v1/projects/platform/networks \
+  -H 'Content-Type: application/json' -d '{"name":"app"}'
+curl -X POST http://localhost:8080/api/v1/projects/platform/networks/platform-app/subnets \
+  -H 'Content-Type: application/json' -d '{"name":"web","cidr":"10.0.0.0/24","type":"private"}'
+curl http://localhost:8080/api/v1/projects/platform/networks/platform-app/subnets
 ```
 
 The VM create endpoint persists a VM record and prepares the KubeVirt/CDI resource
@@ -65,7 +71,10 @@ KLOUDIA_KUBEVIRT_ENABLED=true
 KUBECONFIG=/home/cloudia/.kube/config
 KLOUDIA_KUBEVIRT_NAMESPACE=kloudia-vms
 KLOUDIA_KUBEVIRT_STORAGE_CLASS=test-delete
+KLOUDIA_OVN_EXTERNAL_NETWORK=ovn-vpc-external-network
 ```
+
+Subnets can be `private` (isolated) or `public` (outbound SNAT egress via a kube-ovn VPC NAT gateway). Public subnets require kube-ovn's VPC NAT gateway feature and an external provider network configured at the infra layer.
 
 The default seeded `small` flavor is sized for the current VM-based test cluster:
 `1 vCPU`, `512Mi` memory, and `2Gi` root disk.

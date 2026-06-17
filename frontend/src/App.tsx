@@ -1,15 +1,21 @@
-import { Activity, Boxes, CircleStop, Cpu, HardDrive, Image, Play, Server, Terminal, Trash2 } from "lucide-react";
+import { Activity, Boxes, CircleStop, Cpu, HardDrive, Image, Network, Play, Server, Terminal, Trash2 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { FormEvent, KeyboardEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  createNetwork,
+  createSubnet,
   createVirtualMachine,
+  deleteNetwork,
+  deleteSubnet,
   deleteVirtualMachine,
   fetchFlavors,
   fetchHealth,
   fetchImages,
+  fetchNetworks,
   fetchPreflight,
   fetchProjects,
+  fetchSubnets,
   fetchVirtualMachineDetail,
   fetchVirtualMachines,
   startVirtualMachine,
@@ -32,11 +38,17 @@ export function App() {
   const [vmName, setVmName] = useState("");
   const [selectedImageId, setSelectedImageId] = useState("");
   const [selectedFlavorId, setSelectedFlavorId] = useState("");
+  const [selectedSubnetId, setSelectedSubnetId] = useState("");
   const [selectedVMId, setSelectedVMId] = useState("");
   const [consoleVMId, setConsoleVMId] = useState("");
   const [consoleOutput, setConsoleOutput] = useState("");
   const [consoleState, setConsoleState] = useState<"idle" | "connecting" | "connected" | "disconnected" | "error">("idle");
   const consoleSocket = useRef<WebSocket | null>(null);
+  const [selectedNetworkId, setSelectedNetworkId] = useState("");
+  const [newNetworkName, setNewNetworkName] = useState("");
+  const [newSubnetName, setNewSubnetName] = useState("");
+  const [newSubnetCidr, setNewSubnetCidr] = useState("");
+  const [newSubnetType, setNewSubnetType] = useState<"private" | "public">("private");
   const queryClient = useQueryClient();
   const t = messages[language];
   const health = useQuery({
@@ -82,9 +94,11 @@ export function App() {
         name: vmName.trim(),
         imageId: selectedImageId,
         flavorId: selectedFlavorId,
+        subnetId: selectedSubnetId || undefined,
       }),
     onSuccess: () => {
       setVmName("");
+      setSelectedSubnetId("");
       void queryClient.invalidateQueries({ queryKey: ["vms", selectedProjectId] });
       void queryClient.invalidateQueries({ queryKey: ["vm-detail", selectedProjectId] });
     },
@@ -108,6 +122,49 @@ export function App() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["vms", selectedProjectId] });
       void queryClient.invalidateQueries({ queryKey: ["vm-detail", selectedProjectId] });
+    },
+  });
+  const networks = useQuery({
+    queryKey: ["networks", selectedProjectId],
+    queryFn: () => fetchNetworks(selectedProjectId),
+    enabled: selectedProjectId !== "",
+  });
+  const subnets = useQuery({
+    queryKey: ["subnets", selectedProjectId, selectedNetworkId],
+    queryFn: () => fetchSubnets(selectedProjectId, selectedNetworkId),
+    enabled: selectedProjectId !== "" && selectedNetworkId !== "",
+  });
+  const createNetworkMutation = useMutation({
+    mutationFn: () => createNetwork(selectedProjectId, newNetworkName.trim()),
+    onSuccess: () => {
+      setNewNetworkName("");
+      void queryClient.invalidateQueries({ queryKey: ["networks", selectedProjectId] });
+    },
+  });
+  const deleteNetworkMutation = useMutation({
+    mutationFn: (networkId: string) => deleteNetwork(selectedProjectId, networkId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["networks", selectedProjectId] });
+    },
+  });
+  const createSubnetMutation = useMutation({
+    mutationFn: () =>
+      createSubnet(selectedProjectId, selectedNetworkId, {
+        name: newSubnetName.trim(),
+        cidr: newSubnetCidr.trim(),
+        type: newSubnetType,
+      }),
+    onSuccess: () => {
+      setNewSubnetName("");
+      setNewSubnetCidr("");
+      setNewSubnetType("private");
+      void queryClient.invalidateQueries({ queryKey: ["subnets", selectedProjectId, selectedNetworkId] });
+    },
+  });
+  const deleteSubnetMutation = useMutation({
+    mutationFn: (subnetId: string) => deleteSubnet(selectedProjectId, selectedNetworkId, subnetId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["subnets", selectedProjectId, selectedNetworkId] });
     },
   });
   useEffect(() => {
@@ -144,17 +201,37 @@ export function App() {
     }
   }, [selectedVMId, virtualMachines.data]);
 
+  useEffect(() => {
+    setSelectedNetworkId("");
+  }, [selectedProjectId]);
+
   const isCatalogLoading = projects.isLoading || flavors.isLoading || images.isLoading || virtualMachines.isLoading;
   const projectCount = projects.data?.length ?? 0;
   const vmCount = virtualMachines.data?.length ?? 0;
   const imageCount = images.data?.length ?? 0;
   const canCreateVM = selectedProjectId !== "" && vmName.trim() !== "" && selectedImageId !== "" && selectedFlavorId !== "";
+  const canCreateNetwork = selectedProjectId !== "" && newNetworkName.trim() !== "";
+  const canCreateSubnet = selectedProjectId !== "" && selectedNetworkId !== "" && newSubnetName.trim() !== "" && newSubnetCidr.trim() !== "";
   const healthStatus = health.data?.status ?? (health.isLoading ? "checking" : "offline");
 
   function handleCreateVM(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (canCreateVM) {
       createVM.mutate();
+    }
+  }
+
+  function handleCreateNetwork(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (canCreateNetwork) {
+      createNetworkMutation.mutate();
+    }
+  }
+
+  function handleCreateSubnet(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (canCreateSubnet) {
+      createSubnetMutation.mutate();
     }
   }
 
@@ -354,6 +431,18 @@ export function App() {
                   </option>
                 ))}
               </select>
+              <select
+                aria-label={t.vmSubnetLabel}
+                value={selectedSubnetId}
+                onChange={(event) => setSelectedSubnetId(event.target.value)}
+              >
+                <option value="">{t.vmSubnetNone}</option>
+                {(subnets.data ?? []).map((subnet) => (
+                  <option key={subnet.id} value={subnet.id}>
+                    {subnet.name} ({subnet.cidr})
+                  </option>
+                ))}
+              </select>
               <button className="primary-action" disabled={!canCreateVM || createVM.isPending}>
                 <Play size={16} />
                 {createVM.isPending ? t.creating : t.createVM}
@@ -472,6 +561,10 @@ export function App() {
                     {selectedVMDetail.data.pvcPhase || "-"} {selectedVMDetail.data.pvcCapacity}
                   </strong>
                 </div>
+                <div>
+                  <span>{t.vmSubnetLabel}</span>
+                  <strong>{selectedVMDetail.data.virtualMachine.subnetId || t.vmSubnetNone}</strong>
+                </div>
               </div>
               <div className="events-list">
                 <h3>{t.recentEvents}</h3>
@@ -491,6 +584,133 @@ export function App() {
           ) : (
             <div className="muted-row">{selectedVMId ? t.loadingProjects : t.selectVM}</div>
           )}
+        </section>
+
+        <section className="split-layout">
+          <div className="panel">
+            <div className="panel-header">
+              <div>
+                <h2>{t.networksTitle}</h2>
+              </div>
+              <Network size={18} />
+            </div>
+            <form className="create-form" onSubmit={handleCreateNetwork}>
+              <input
+                aria-label={t.networkNameLabel}
+                placeholder={t.networkNameLabel}
+                value={newNetworkName}
+                onChange={(event) => setNewNetworkName(event.target.value)}
+              />
+              <button className="primary-action" disabled={!canCreateNetwork || createNetworkMutation.isPending}>
+                <Play size={16} />
+                {createNetworkMutation.isPending ? t.creating : t.networkCreate}
+              </button>
+            </form>
+            {createNetworkMutation.isError && <div className="error-row">{t.networkActionFailed}</div>}
+            {deleteNetworkMutation.isError && <div className="error-row">{t.networkActionFailed}</div>}
+            <div className="compact-list">
+              {(networks.data ?? []).map((network) => (
+                <div
+                  className={network.id === selectedNetworkId ? "compact-row selected" : "compact-row"}
+                  key={network.id}
+                >
+                  <button
+                    className="project-row"
+                    style={{ flex: 1, textAlign: "left" }}
+                    onClick={() => setSelectedNetworkId(network.id)}
+                  >
+                    <strong>{network.name}</strong>
+                    <span className={`state state-${network.status.toLowerCase()}`}>{network.status}</span>
+                  </button>
+                  <button
+                    className="icon-action danger-action"
+                    aria-label={`${t.networkDelete} ${network.name}`}
+                    disabled={deleteNetworkMutation.isPending && deleteNetworkMutation.variables === network.id}
+                    onClick={() => deleteNetworkMutation.mutate(network.id)}
+                  >
+                    <Trash2 size={16} />
+                    <span>{t.networkDelete}</span>
+                  </button>
+                </div>
+              ))}
+              {networks.isLoading && <div className="muted-row">{t.statusChecking}</div>}
+              {!networks.isLoading && (networks.data ?? []).length === 0 && (
+                <div className="muted-row">{t.networkEmpty}</div>
+              )}
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panel-header">
+              <div>
+                <h2>{t.subnetsTitle}</h2>
+              </div>
+            </div>
+            {selectedNetworkId !== "" ? (
+              <>
+                <form className="create-form" onSubmit={handleCreateSubnet}>
+                  <input
+                    aria-label={t.subnetNameLabel}
+                    placeholder={t.subnetNameLabel}
+                    value={newSubnetName}
+                    onChange={(event) => setNewSubnetName(event.target.value)}
+                  />
+                  <input
+                    aria-label={t.subnetCidrLabel}
+                    placeholder={t.subnetCidrLabel}
+                    value={newSubnetCidr}
+                    onChange={(event) => setNewSubnetCidr(event.target.value)}
+                  />
+                  <select
+                    aria-label={t.subnetTypeLabel}
+                    value={newSubnetType}
+                    onChange={(event) => setNewSubnetType(event.target.value as "private" | "public")}
+                  >
+                    <option value="private">{t.subnetTypePrivate}</option>
+                    <option value="public">{t.subnetTypePublic}</option>
+                  </select>
+                  <button className="primary-action" disabled={!canCreateSubnet || createSubnetMutation.isPending}>
+                    <Play size={16} />
+                    {createSubnetMutation.isPending ? t.creating : t.subnetCreate}
+                  </button>
+                </form>
+                {createSubnetMutation.isError && <div className="error-row">{t.subnetActionFailed}</div>}
+                {deleteSubnetMutation.isError && <div className="error-row">{t.subnetActionFailed}</div>}
+                <div className="table">
+                  <div className="table-row table-head">
+                    <span>{t.subnetNameLabel}</span>
+                    <span>{t.subnetCidrLabel}</span>
+                    <span>{t.subnetTypeLabel}</span>
+                    <span>{t.columnActions}</span>
+                  </div>
+                  {(subnets.data ?? []).map((subnet) => (
+                    <div className="table-row" key={subnet.id}>
+                      <strong>{subnet.name}</strong>
+                      <span>{subnet.cidr}</span>
+                      <span>{subnet.type}</span>
+                      <div className="row-actions">
+                        <button
+                          className="icon-action danger-action"
+                          aria-label={`${t.networkDelete} ${subnet.name}`}
+                          disabled={deleteSubnetMutation.isPending && deleteSubnetMutation.variables === subnet.id}
+                          onClick={() => deleteSubnetMutation.mutate(subnet.id)}
+                        >
+                          <Trash2 size={16} />
+                          <span>{t.networkDelete}</span>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {subnets.isLoading && <div className="muted-row">{t.statusChecking}</div>}
+                  {!subnets.isLoading && (subnets.data ?? []).length === 0 && (
+                    <div className="muted-row">{t.subnetEmpty}</div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="muted-row">{t.networkEmpty}</div>
+            )}
+          </div>
         </section>
 
         <section className="detail-grid">

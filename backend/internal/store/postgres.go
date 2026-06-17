@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kloudia/kloudia/backend/internal/domain"
 )
@@ -82,6 +83,34 @@ CREATE TABLE IF NOT EXISTS virtual_machines (
   status text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS networks (
+  id text PRIMARY KEY,
+  project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  ovn_vpc_name text NOT NULL,
+  status text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (project_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS subnets (
+  id text PRIMARY KEY,
+  network_id text NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
+  project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  cidr text NOT NULL,
+  gateway text NOT NULL,
+  type text NOT NULL,
+  ovn_subnet_name text NOT NULL,
+  nad_name text NOT NULL,
+  status text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (network_id, name)
+);
+
+ALTER TABLE virtual_machines
+  ADD COLUMN IF NOT EXISTS subnet_id text REFERENCES subnets(id);
 
 INSERT INTO projects (id, name, description)
 VALUES
@@ -177,7 +206,7 @@ ORDER BY created_at DESC, name`, projectID)
 
 func (p *Postgres) ListVirtualMachines(ctx context.Context, projectID string) ([]domain.VirtualMachine, error) {
 	rows, err := p.pool.Query(ctx, `
-SELECT id, project_id, name, image_id, flavor_id, status, created_at
+SELECT id, project_id, name, image_id, flavor_id, subnet_id, status, created_at
 FROM virtual_machines
 WHERE project_id = $1
 ORDER BY created_at DESC, name`, projectID)
@@ -189,8 +218,12 @@ ORDER BY created_at DESC, name`, projectID)
 	var vms []domain.VirtualMachine
 	for rows.Next() {
 		var vm domain.VirtualMachine
-		if err := rows.Scan(&vm.ID, &vm.ProjectID, &vm.Name, &vm.ImageID, &vm.FlavorID, &vm.Status, &vm.CreatedAt); err != nil {
+		var subnetID *string
+		if err := rows.Scan(&vm.ID, &vm.ProjectID, &vm.Name, &vm.ImageID, &vm.FlavorID, &subnetID, &vm.Status, &vm.CreatedAt); err != nil {
 			return nil, err
+		}
+		if subnetID != nil {
+			vm.SubnetID = *subnetID
 		}
 		vms = append(vms, vm)
 	}
@@ -199,11 +232,15 @@ ORDER BY created_at DESC, name`, projectID)
 
 func (p *Postgres) GetVirtualMachine(ctx context.Context, projectID string, vmID string) (domain.VirtualMachine, error) {
 	var vm domain.VirtualMachine
+	var subnetID *string
 	err := p.pool.QueryRow(ctx, `
-SELECT id, project_id, name, image_id, flavor_id, status, created_at
+SELECT id, project_id, name, image_id, flavor_id, subnet_id, status, created_at
 FROM virtual_machines
 WHERE project_id = $1 AND id = $2`, projectID, vmID).
-		Scan(&vm.ID, &vm.ProjectID, &vm.Name, &vm.ImageID, &vm.FlavorID, &vm.Status, &vm.CreatedAt)
+		Scan(&vm.ID, &vm.ProjectID, &vm.Name, &vm.ImageID, &vm.FlavorID, &subnetID, &vm.Status, &vm.CreatedAt)
+	if subnetID != nil {
+		vm.SubnetID = *subnetID
+	}
 	return vm, err
 }
 
@@ -254,18 +291,40 @@ WHERE id = $1 AND enabled = true`, flavorID).
 		return domain.VirtualMachineProvisioningPlan{}, err
 	}
 
+	subnetID := strings.TrimSpace(input.SubnetID)
+	var subnet *domain.Subnet
+	if subnetID != "" {
+		var s domain.Subnet
+		if err := tx.QueryRow(ctx, `
+SELECT id, network_id, project_id, name, cidr, gateway, type, ovn_subnet_name, nad_name, status, created_at
+FROM subnets
+WHERE id = $1 AND project_id = $2`, subnetID, projectID).
+			Scan(&s.ID, &s.NetworkID, &s.ProjectID, &s.Name, &s.CIDR, &s.Gateway, &s.Type, &s.OVNSubnetName, &s.NADName, &s.Status, &s.CreatedAt); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.VirtualMachineProvisioningPlan{}, ErrNotFound
+			}
+			return domain.VirtualMachineProvisioningPlan{}, err
+		}
+		subnet = &s
+	}
+
 	vmID := makeVirtualMachineID(projectID, name)
 	var vm domain.VirtualMachine
+	var scannedSubnet *string
 	if err := tx.QueryRow(ctx, `
-INSERT INTO virtual_machines (id, project_id, name, image_id, flavor_id, status)
-VALUES ($1, $2, $3, $4, $5, 'Provisioning')
+INSERT INTO virtual_machines (id, project_id, name, image_id, flavor_id, subnet_id, status)
+VALUES ($1, $2, $3, $4, $5, $6, 'Provisioning')
 ON CONFLICT (id) DO UPDATE
 SET image_id = EXCLUDED.image_id,
     flavor_id = EXCLUDED.flavor_id,
+    subnet_id = EXCLUDED.subnet_id,
     status = EXCLUDED.status
-RETURNING id, project_id, name, image_id, flavor_id, status, created_at`, vmID, projectID, name, imageID, flavorID).
-		Scan(&vm.ID, &vm.ProjectID, &vm.Name, &vm.ImageID, &vm.FlavorID, &vm.Status, &vm.CreatedAt); err != nil {
+RETURNING id, project_id, name, image_id, flavor_id, subnet_id, status, created_at`, vmID, projectID, name, imageID, flavorID, nullableString(subnetID)).
+		Scan(&vm.ID, &vm.ProjectID, &vm.Name, &vm.ImageID, &vm.FlavorID, &scannedSubnet, &vm.Status, &vm.CreatedAt); err != nil {
 		return domain.VirtualMachineProvisioningPlan{}, err
+	}
+	if scannedSubnet != nil {
+		vm.SubnetID = *scannedSubnet
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return domain.VirtualMachineProvisioningPlan{}, err
@@ -274,6 +333,7 @@ RETURNING id, project_id, name, image_id, flavor_id, status, created_at`, vmID, 
 		VirtualMachine: vm,
 		Image:          image,
 		Flavor:         flavor,
+		Subnet:         subnet,
 	}, nil
 }
 
@@ -285,4 +345,11 @@ func makeVirtualMachineID(projectID string, name string) string {
 		return "vm"
 	}
 	return id
+}
+
+func nullableString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }

@@ -62,3 +62,45 @@ func TestBuildResourcesUsesRunStrategyAndDataVolumeSource(t *testing.T) {
 		t.Fatalf("expected 512Mi memory, got %#v", requests["memory"])
 	}
 }
+
+func TestBuildResourcesAddsMultusNICWhenSubnetPresent(t *testing.T) {
+	plan := domain.VirtualMachineProvisioningPlan{
+		VirtualMachine: domain.VirtualMachine{ID: "platform-web-01", ProjectID: "platform", Name: "web-01"},
+		Image:          domain.Image{ID: "platform-cirros", SourceURL: "https://example.invalid/cirros.img"},
+		Flavor:         domain.Flavor{ID: "small", CPU: 1, MemoryBytes: 512 * 1024 * 1024, RootDiskBytes: 2 * 1024 * 1024 * 1024},
+		Subnet:         &domain.Subnet{ID: "platform-app-web", NADName: "kloudia-net-platform-app-web"},
+	}
+
+	resources := BuildResources("kloudia-vms", "test-delete", plan)
+
+	templateSpec := resources.VirtualMachine["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+	networks := templateSpec["networks"].([]any)
+	if len(networks) != 1 {
+		t.Fatalf("expected exactly one network, got %#v", networks)
+	}
+	net0 := networks[0].(map[string]any)
+	multus := net0["multus"].(map[string]any)
+	if multus["networkName"] != "kloudia-vms/kloudia-net-platform-app-web" {
+		t.Fatalf("expected multus networkName, got %#v", multus["networkName"])
+	}
+	ifaces := templateSpec["domain"].(map[string]any)["devices"].(map[string]any)["interfaces"].([]any)
+	if len(ifaces) != 1 {
+		t.Fatalf("expected one interface, got %#v", ifaces)
+	}
+	if _, hasBridge := ifaces[0].(map[string]any)["bridge"]; !hasBridge {
+		t.Fatalf("expected bridge binding, got %#v", ifaces[0])
+	}
+}
+
+func TestBuildResourcesOmitsNetworksWhenNoSubnet(t *testing.T) {
+	plan := domain.VirtualMachineProvisioningPlan{
+		VirtualMachine: domain.VirtualMachine{ID: "platform-web-02", ProjectID: "platform", Name: "web-02"},
+		Image:          domain.Image{ID: "platform-cirros", SourceURL: "https://example.invalid/cirros.img"},
+		Flavor:         domain.Flavor{ID: "small", CPU: 1, MemoryBytes: 512 * 1024 * 1024, RootDiskBytes: 2 * 1024 * 1024 * 1024},
+	}
+	resources := BuildResources("kloudia-vms", "test-delete", plan)
+	templateSpec := resources.VirtualMachine["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+	if _, hasNetworks := templateSpec["networks"]; hasNetworks {
+		t.Fatalf("expected no networks block when subnet is absent")
+	}
+}

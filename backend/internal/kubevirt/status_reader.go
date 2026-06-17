@@ -107,6 +107,24 @@ func (r *StatusReader) GetPreflight(ctx context.Context) (domain.PreflightResult
 	} else {
 		checks = append(checks, domain.PreflightCheck{Name: "virtualMachines", Status: "OK", Message: "Current VM resources: " + strconv.Itoa(len(vms.Items))})
 	}
+	_, err = r.client.Resource(schema.GroupVersionResource{Group: "kubeovn.io", Version: "v1", Resource: "vpcs"}).List(ctx, v1.ListOptions{Limit: 1})
+	if err != nil {
+		checks = append(checks, domain.PreflightCheck{Name: "kube-ovn-vpc", Status: "Failed", Message: err.Error()})
+	} else {
+		checks = append(checks, domain.PreflightCheck{Name: "kube-ovn-vpc", Status: "OK", Message: "kube-ovn VPC CRD is available"})
+	}
+	_, err = r.client.Resource(schema.GroupVersionResource{Group: "k8s.cni.cncf.io", Version: "v1", Resource: "network-attachment-definitions"}).Namespace(r.namespace).List(ctx, v1.ListOptions{Limit: 1})
+	if err != nil {
+		checks = append(checks, domain.PreflightCheck{Name: "multus", Status: "Failed", Message: err.Error()})
+	} else {
+		checks = append(checks, domain.PreflightCheck{Name: "multus", Status: "OK", Message: "Multus NetworkAttachmentDefinition CRD is available"})
+	}
+	_, err = r.client.Resource(schema.GroupVersionResource{Group: "kubeovn.io", Version: "v1", Resource: "vpc-nat-gateways"}).List(ctx, v1.ListOptions{Limit: 1})
+	if err != nil {
+		checks = append(checks, domain.PreflightCheck{Name: "kube-ovn-nat-gateway", Status: "Warning", Message: "public subnet egress unavailable: " + err.Error()})
+	} else {
+		checks = append(checks, domain.PreflightCheck{Name: "kube-ovn-nat-gateway", Status: "OK", Message: "kube-ovn VPC NAT gateway CRD is available"})
+	}
 	status := "OK"
 	for _, check := range checks {
 		if check.Status == "Failed" {

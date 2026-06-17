@@ -40,7 +40,15 @@ func main() {
 			log.Fatalf("kubevirt console streamer setup failed: %v", err)
 		}
 		provisioner := kubevirt.NewProvisioner(cfg.KubeVirtNamespace, cfg.KubeVirtStorageClassName, applier)
-		handler = httpapi.NewRouterWithProvisionerStatusReaderAndConsoleStreamer(cfg.Version, db, provisioner, statusReader, consoleStreamer)
+		networkProvisioner := kubevirt.NewNetworkProvisioner(cfg.KubeVirtNamespace, cfg.OVNExternalNetwork, applier)
+		handler = httpapi.NewRouterWithDependencies(httpapi.Dependencies{
+			Version:            cfg.Version,
+			Store:              db,
+			Provisioner:        provisioner,
+			StatusReader:       statusReader,
+			ConsoleStreamer:    consoleStreamer,
+			NetworkProvisioner: networkProvisioner,
+		})
 		log.Printf("kubevirt provisioning enabled: namespace=%s storageClass=%s", cfg.KubeVirtNamespace, cfg.KubeVirtStorageClassName)
 	}
 

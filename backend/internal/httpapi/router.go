@@ -3,11 +3,13 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
 	"github.com/kloudia/kloudia/backend/internal/domain"
+	storepkg "github.com/kloudia/kloudia/backend/internal/store"
 )
 
 type Store interface {
@@ -19,6 +21,14 @@ type Store interface {
 	CreateVirtualMachine(ctx context.Context, projectID string, input domain.CreateVirtualMachineInput) (domain.VirtualMachineProvisioningPlan, error)
 	GetVirtualMachine(ctx context.Context, projectID string, vmID string) (domain.VirtualMachine, error)
 	DeleteVirtualMachine(ctx context.Context, projectID string, vmID string) error
+	ListNetworks(ctx context.Context, projectID string) ([]domain.Network, error)
+	GetNetwork(ctx context.Context, projectID string, networkID string) (domain.Network, error)
+	CreateNetwork(ctx context.Context, projectID string, name string) (domain.Network, error)
+	DeleteNetwork(ctx context.Context, projectID string, networkID string) (domain.Network, error)
+	ListSubnets(ctx context.Context, projectID string, networkID string) ([]domain.Subnet, error)
+	GetSubnet(ctx context.Context, projectID string, subnetID string) (domain.Subnet, error)
+	CreateSubnet(ctx context.Context, projectID string, networkID string, name string, cidr string, subnetType string, gateway string) (domain.Subnet, error)
+	DeleteSubnet(ctx context.Context, projectID string, subnetID string) (domain.Subnet, error)
 }
 
 type Provisioner interface {
@@ -83,6 +93,29 @@ func (noopConsoleStreamer) StreamVirtualMachineConsole(http.ResponseWriter, *htt
 	return nil
 }
 
+type NetworkProvisioner interface {
+	CreateNetwork(ctx context.Context, network domain.Network) error
+	DeleteNetwork(ctx context.Context, network domain.Network) error
+	CreateSubnet(ctx context.Context, ovnVPCName string, subnet domain.Subnet) error
+	DeleteSubnet(ctx context.Context, ovnVPCName string, subnet domain.Subnet) error
+}
+
+type noopNetworkProvisioner struct{}
+
+func (noopNetworkProvisioner) CreateNetwork(context.Context, domain.Network) error       { return nil }
+func (noopNetworkProvisioner) DeleteNetwork(context.Context, domain.Network) error       { return nil }
+func (noopNetworkProvisioner) CreateSubnet(context.Context, string, domain.Subnet) error { return nil }
+func (noopNetworkProvisioner) DeleteSubnet(context.Context, string, domain.Subnet) error { return nil }
+
+type Dependencies struct {
+	Version            string
+	Store              Store
+	Provisioner        Provisioner
+	StatusReader       StatusReader
+	ConsoleStreamer    ConsoleStreamer
+	NetworkProvisioner NetworkProvisioner
+}
+
 func NewRouter(version string, store Store) http.Handler {
 	return NewRouterWithProvisioner(version, store, noopProvisioner{})
 }
@@ -96,6 +129,34 @@ func NewRouterWithProvisionerAndStatusReader(version string, store Store, provis
 }
 
 func NewRouterWithProvisionerStatusReaderAndConsoleStreamer(version string, store Store, provisioner Provisioner, statusReader StatusReader, consoleStreamer ConsoleStreamer) http.Handler {
+	return NewRouterWithDependencies(Dependencies{
+		Version:         version,
+		Store:           store,
+		Provisioner:     provisioner,
+		StatusReader:    statusReader,
+		ConsoleStreamer: consoleStreamer,
+	})
+}
+
+func NewRouterWithDependencies(deps Dependencies) http.Handler {
+	version := deps.Version
+	store := deps.Store
+	provisioner := deps.Provisioner
+	statusReader := deps.StatusReader
+	consoleStreamer := deps.ConsoleStreamer
+	networkProvisioner := deps.NetworkProvisioner
+	if provisioner == nil {
+		provisioner = noopProvisioner{}
+	}
+	if statusReader == nil {
+		statusReader = noopStatusReader{}
+	}
+	if consoleStreamer == nil {
+		consoleStreamer = noopConsoleStreamer{}
+	}
+	if networkProvisioner == nil {
+		networkProvisioner = noopNetworkProvisioner{}
+	}
 	router := chi.NewRouter()
 	router.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"http://localhost:5173"},
@@ -196,6 +257,7 @@ func NewRouterWithProvisionerStatusReaderAndConsoleStreamer(version string, stor
 			Name     string `json:"name"`
 			ImageID  string `json:"imageId"`
 			FlavorID string `json:"flavorId"`
+			SubnetID string `json:"subnetId"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "request body must be valid JSON")
@@ -209,8 +271,13 @@ func NewRouterWithProvisionerStatusReaderAndConsoleStreamer(version string, stor
 			Name:     request.Name,
 			ImageID:  request.ImageID,
 			FlavorID: request.FlavorID,
+			SubnetID: request.SubnetID,
 		})
 		if err != nil {
+			if errors.Is(err, storepkg.ErrNotFound) {
+				writeError(w, http.StatusBadRequest, "INVALID_SUBNET", "subnetId not found in this project")
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "VM_CREATE_FAILED", "failed to create virtual machine")
 			return
 		}
@@ -312,6 +379,179 @@ func NewRouterWithProvisionerStatusReaderAndConsoleStreamer(version string, stor
 			writeError(w, http.StatusBadGateway, "VM_CONSOLE_STREAM_FAILED", "failed to stream virtual machine console")
 			return
 		}
+	})
+
+	router.Get("/api/v1/projects/{projectID}/networks", func(w http.ResponseWriter, r *http.Request) {
+		networks, err := store.ListNetworks(r.Context(), chi.URLParam(r, "projectID"))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "NETWORKS_UNAVAILABLE", "failed to list networks")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": networks})
+	})
+
+	router.Post("/api/v1/projects/{projectID}/networks", func(w http.ResponseWriter, r *http.Request) {
+		projectID := chi.URLParam(r, "projectID")
+		var request struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "request body must be valid JSON")
+			return
+		}
+		if request.Name == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_NETWORK_REQUEST", "name is required")
+			return
+		}
+		network, err := store.CreateNetwork(r.Context(), projectID, request.Name)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "NETWORK_CREATE_FAILED", "failed to create network")
+			return
+		}
+		if err := networkProvisioner.CreateNetwork(r.Context(), network); err != nil {
+			_, _ = store.DeleteNetwork(r.Context(), projectID, network.ID)
+			writeError(w, http.StatusBadGateway, "NETWORK_PROVISION_FAILED", "failed to provision network")
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"data": network})
+	})
+
+	router.Delete("/api/v1/projects/{projectID}/networks/{networkID}", func(w http.ResponseWriter, r *http.Request) {
+		projectID := chi.URLParam(r, "projectID")
+		networkID := chi.URLParam(r, "networkID")
+		network, err := store.GetNetwork(r.Context(), projectID, networkID)
+		if err != nil {
+			if errors.Is(err, storepkg.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "NETWORK_NOT_FOUND", "network was not found")
+			} else {
+				writeError(w, http.StatusInternalServerError, "NETWORK_LOOKUP_FAILED", "failed to look up network")
+			}
+			return
+		}
+		if _, err := store.DeleteNetwork(r.Context(), projectID, networkID); err != nil {
+			switch {
+			case errors.Is(err, storepkg.ErrNotFound):
+				writeError(w, http.StatusNotFound, "NETWORK_NOT_FOUND", "network was not found")
+			case errors.Is(err, storepkg.ErrNetworkInUse):
+				writeError(w, http.StatusConflict, "NETWORK_IN_USE", "network still has subnets")
+			default:
+				writeError(w, http.StatusInternalServerError, "NETWORK_DELETE_FAILED", "failed to delete network")
+			}
+			return
+		}
+		if err := networkProvisioner.DeleteNetwork(r.Context(), network); err != nil {
+			writeError(w, http.StatusBadGateway, "NETWORK_DEPROVISION_FAILED", "failed to delete network resources")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	router.Get("/api/v1/projects/{projectID}/networks/{networkID}/subnets", func(w http.ResponseWriter, r *http.Request) {
+		subnets, err := store.ListSubnets(r.Context(), chi.URLParam(r, "projectID"), chi.URLParam(r, "networkID"))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "SUBNETS_UNAVAILABLE", "failed to list subnets")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": subnets})
+	})
+
+	router.Post("/api/v1/projects/{projectID}/networks/{networkID}/subnets", func(w http.ResponseWriter, r *http.Request) {
+		projectID := chi.URLParam(r, "projectID")
+		networkID := chi.URLParam(r, "networkID")
+		var request struct {
+			Name    string `json:"name"`
+			CIDR    string `json:"cidr"`
+			Type    string `json:"type"`
+			Gateway string `json:"gateway"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "request body must be valid JSON")
+			return
+		}
+		if request.Name == "" || request.CIDR == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_SUBNET_REQUEST", "name and cidr are required")
+			return
+		}
+		if request.Type == "" {
+			request.Type = "private"
+		}
+		if request.Type != "private" && request.Type != "public" {
+			writeError(w, http.StatusBadRequest, "SUBNET_TYPE_INVALID", "type must be private or public")
+			return
+		}
+		network, err := store.GetNetwork(r.Context(), projectID, networkID)
+		if err != nil {
+			if errors.Is(err, storepkg.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "NETWORK_NOT_FOUND", "network was not found")
+			} else {
+				writeError(w, http.StatusInternalServerError, "NETWORK_LOOKUP_FAILED", "failed to look up network")
+			}
+			return
+		}
+		subnet, err := store.CreateSubnet(r.Context(), projectID, networkID, request.Name, request.CIDR, request.Type, request.Gateway)
+		if err != nil {
+			switch {
+			case errors.Is(err, storepkg.ErrNotFound):
+				writeError(w, http.StatusNotFound, "NETWORK_NOT_FOUND", "network was not found")
+			case errors.Is(err, storepkg.ErrSubnetCIDRInvalid):
+				writeError(w, http.StatusBadRequest, "SUBNET_CIDR_INVALID", "subnet cidr is invalid")
+			case errors.Is(err, storepkg.ErrSubnetCIDROverlap):
+				writeError(w, http.StatusConflict, "SUBNET_CIDR_OVERLAP", "subnet cidr overlaps an existing subnet in this vpc")
+			default:
+				writeError(w, http.StatusInternalServerError, "SUBNET_CREATE_FAILED", "failed to create subnet")
+			}
+			return
+		}
+		if err := networkProvisioner.CreateSubnet(r.Context(), network.OVNVPCName, subnet); err != nil {
+			_, _ = store.DeleteSubnet(r.Context(), projectID, subnet.ID)
+			writeError(w, http.StatusBadGateway, "SUBNET_PROVISION_FAILED", "failed to provision subnet")
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"data": subnet})
+	})
+
+	router.Delete("/api/v1/projects/{projectID}/networks/{networkID}/subnets/{subnetID}", func(w http.ResponseWriter, r *http.Request) {
+		projectID := chi.URLParam(r, "projectID")
+		networkID := chi.URLParam(r, "networkID")
+		subnetID := chi.URLParam(r, "subnetID")
+		network, err := store.GetNetwork(r.Context(), projectID, networkID)
+		if err != nil {
+			if errors.Is(err, storepkg.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "NETWORK_NOT_FOUND", "network was not found")
+			} else {
+				writeError(w, http.StatusInternalServerError, "NETWORK_LOOKUP_FAILED", "failed to look up network")
+			}
+			return
+		}
+		subnet, err := store.GetSubnet(r.Context(), projectID, subnetID)
+		if err != nil {
+			if errors.Is(err, storepkg.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "SUBNET_NOT_FOUND", "subnet was not found")
+			} else {
+				writeError(w, http.StatusInternalServerError, "SUBNET_LOOKUP_FAILED", "failed to look up subnet")
+			}
+			return
+		}
+		if subnet.NetworkID != networkID {
+			writeError(w, http.StatusNotFound, "SUBNET_NOT_FOUND", "subnet was not found")
+			return
+		}
+		if _, err := store.DeleteSubnet(r.Context(), projectID, subnetID); err != nil {
+			switch {
+			case errors.Is(err, storepkg.ErrNotFound):
+				writeError(w, http.StatusNotFound, "SUBNET_NOT_FOUND", "subnet was not found")
+			case errors.Is(err, storepkg.ErrSubnetInUse):
+				writeError(w, http.StatusConflict, "SUBNET_IN_USE", "subnet still has virtual machines attached")
+			default:
+				writeError(w, http.StatusInternalServerError, "SUBNET_DELETE_FAILED", "failed to delete subnet")
+			}
+			return
+		}
+		if err := networkProvisioner.DeleteSubnet(r.Context(), network.OVNVPCName, subnet); err != nil {
+			writeError(w, http.StatusBadGateway, "SUBNET_DEPROVISION_FAILED", "failed to delete subnet resources")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	return router

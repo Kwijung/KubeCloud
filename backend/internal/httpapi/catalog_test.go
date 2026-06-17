@@ -10,14 +10,19 @@ import (
 	"time"
 
 	"github.com/kloudia/kloudia/backend/internal/domain"
+	storepkg "github.com/kloudia/kloudia/backend/internal/store"
 )
 
 type fakeCatalogStore struct {
-	projects    []domain.Project
-	flavors     []domain.Flavor
-	images      []domain.Image
-	vms         []domain.VirtualMachine
-	createdPlan domain.VirtualMachineProvisioningPlan
+	projects        []domain.Project
+	flavors         []domain.Flavor
+	images          []domain.Image
+	vms             []domain.VirtualMachine
+	createdPlan     domain.VirtualMachineProvisioningPlan
+	createInputs    []domain.CreateVirtualMachineInput
+	networks        []domain.Network
+	subnets         []domain.Subnet
+	createSubnetErr error
 }
 
 type fakeStatusReader struct {
@@ -94,7 +99,11 @@ func (s fakeCatalogStore) ListVirtualMachines(_ context.Context, projectID strin
 	return vms, nil
 }
 
-func (s fakeCatalogStore) CreateVirtualMachine(_ context.Context, projectID string, input domain.CreateVirtualMachineInput) (domain.VirtualMachineProvisioningPlan, error) {
+func (s *fakeCatalogStore) CreateVirtualMachine(_ context.Context, projectID string, input domain.CreateVirtualMachineInput) (domain.VirtualMachineProvisioningPlan, error) {
+	s.createInputs = append(s.createInputs, input)
+	if input.SubnetID == "missing" {
+		return domain.VirtualMachineProvisioningPlan{}, storepkg.ErrNotFound
+	}
 	plan := s.createdPlan
 	if plan.VirtualMachine.ID == "" {
 		plan.VirtualMachine = domain.VirtualMachine{
@@ -126,6 +135,79 @@ func (s *fakeCatalogStore) DeleteVirtualMachine(_ context.Context, projectID str
 		}
 	}
 	return errors.New("virtual machine not found")
+}
+
+func (s *fakeCatalogStore) ListNetworks(_ context.Context, projectID string) ([]domain.Network, error) {
+	var out []domain.Network
+	for _, n := range s.networks {
+		if n.ProjectID == projectID {
+			out = append(out, n)
+		}
+	}
+	return out, nil
+}
+
+func (s *fakeCatalogStore) GetNetwork(_ context.Context, projectID string, networkID string) (domain.Network, error) {
+	for _, n := range s.networks {
+		if n.ProjectID == projectID && n.ID == networkID {
+			return n, nil
+		}
+	}
+	return domain.Network{}, storepkg.ErrNotFound
+}
+
+func (s *fakeCatalogStore) CreateNetwork(_ context.Context, projectID string, name string) (domain.Network, error) {
+	n := domain.Network{ID: projectID + "-" + name, ProjectID: projectID, Name: name, OVNVPCName: "kloudia-vpc-" + projectID + "-" + name, Status: "Ready"}
+	s.networks = append(s.networks, n)
+	return n, nil
+}
+
+func (s *fakeCatalogStore) DeleteNetwork(_ context.Context, projectID string, networkID string) (domain.Network, error) {
+	for i, n := range s.networks {
+		if n.ProjectID == projectID && n.ID == networkID {
+			s.networks = append(s.networks[:i], s.networks[i+1:]...)
+			return n, nil
+		}
+	}
+	return domain.Network{}, storepkg.ErrNotFound
+}
+
+func (s *fakeCatalogStore) ListSubnets(_ context.Context, projectID string, networkID string) ([]domain.Subnet, error) {
+	var out []domain.Subnet
+	for _, sn := range s.subnets {
+		if sn.ProjectID == projectID && sn.NetworkID == networkID {
+			out = append(out, sn)
+		}
+	}
+	return out, nil
+}
+
+func (s *fakeCatalogStore) GetSubnet(_ context.Context, projectID string, subnetID string) (domain.Subnet, error) {
+	for _, sn := range s.subnets {
+		if sn.ProjectID == projectID && sn.ID == subnetID {
+			return sn, nil
+		}
+	}
+	return domain.Subnet{}, storepkg.ErrNotFound
+}
+
+func (s *fakeCatalogStore) CreateSubnet(_ context.Context, projectID string, networkID string, name string, cidr string, subnetType string, gateway string) (domain.Subnet, error) {
+	if s.createSubnetErr != nil {
+		return domain.Subnet{}, s.createSubnetErr
+	}
+	sn := domain.Subnet{ID: networkID + "-" + name, NetworkID: networkID, ProjectID: projectID, Name: name, CIDR: cidr, Gateway: gateway, Type: subnetType, OVNSubnetName: "kloudia-subnet-" + networkID + "-" + name, NADName: "kloudia-net-" + networkID + "-" + name, Status: "Ready"}
+	s.subnets = append(s.subnets, sn)
+	return sn, nil
+}
+
+func (s *fakeCatalogStore) DeleteSubnet(_ context.Context, projectID string, subnetID string) (domain.Subnet, error) {
+	for i, sn := range s.subnets {
+		if sn.ProjectID == projectID && sn.ID == subnetID {
+			s.subnets = append(s.subnets[:i], s.subnets[i+1:]...)
+			return sn, nil
+		}
+	}
+	return domain.Subnet{}, storepkg.ErrNotFound
 }
 
 func TestListProjectsReturnsProjectCatalog(t *testing.T) {
