@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/kloudia/kloudia/backend/internal/domain"
+	storepkg "github.com/kloudia/kloudia/backend/internal/store"
 )
 
 func TestCreateNetworkPersistsAndProvisions(t *testing.T) {
@@ -97,5 +98,73 @@ func TestCreateSubnetValidatesTypeAndProvisions(t *testing.T) {
 	router.ServeHTTP(rec2, req2)
 	if rec2.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for invalid type, got %d", rec2.Code)
+	}
+}
+
+func TestDeleteSubnetWrongNetworkReturns404(t *testing.T) {
+	store := &fakeCatalogStore{
+		networks: []domain.Network{
+			{ID: "net-a", ProjectID: "platform", Name: "net-a", OVNVPCName: "kloudia-vpc-platform-net-a", Status: "Ready"},
+			{ID: "net-b", ProjectID: "platform", Name: "net-b", OVNVPCName: "kloudia-vpc-platform-net-b", Status: "Ready"},
+		},
+		subnets: []domain.Subnet{
+			{ID: "subnet-1", NetworkID: "net-a", ProjectID: "platform", Name: "web", CIDR: "10.0.0.0/24", Status: "Ready"},
+		},
+	}
+	np := &recordingNetworkProvisioner{}
+	router := NewRouterWithDependencies(Dependencies{Version: "test", Store: store, NetworkProvisioner: np})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/projects/platform/networks/net-b/subnets/subnet-1", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Error.Code != "SUBNET_NOT_FOUND" {
+		t.Fatalf("expected SUBNET_NOT_FOUND, got %q", body.Error.Code)
+	}
+	if len(store.subnets) != 1 {
+		t.Fatalf("expected subnet to remain in store, got %d subnets", len(store.subnets))
+	}
+	if len(np.deletedSubnets) != 0 {
+		t.Fatalf("expected provisioner DeleteSubnet not to be called, got %d calls", len(np.deletedSubnets))
+	}
+}
+
+func TestCreateSubnetCIDROverlapReturns409(t *testing.T) {
+	store := &fakeCatalogStore{
+		networks:        []domain.Network{{ID: "platform-app", ProjectID: "platform", Name: "app", OVNVPCName: "kloudia-vpc-platform-app", Status: "Ready"}},
+		createSubnetErr: storepkg.ErrSubnetCIDROverlap,
+	}
+	np := &recordingNetworkProvisioner{}
+	router := NewRouterWithDependencies(Dependencies{Version: "test", Store: store, NetworkProvisioner: np})
+
+	body := bytes.NewBufferString(`{"name":"web","cidr":"10.0.0.0/24","type":"private"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/platform/networks/platform-app/subnets", body)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var respBody struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &respBody); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if respBody.Error.Code != "SUBNET_CIDR_OVERLAP" {
+		t.Fatalf("expected SUBNET_CIDR_OVERLAP, got %q", respBody.Error.Code)
 	}
 }

@@ -413,15 +413,22 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 		networkID := chi.URLParam(r, "networkID")
 		network, err := store.GetNetwork(r.Context(), projectID, networkID)
 		if err != nil {
-			writeError(w, http.StatusNotFound, "NETWORK_NOT_FOUND", "network was not found")
+			if errors.Is(err, storepkg.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "NETWORK_NOT_FOUND", "network was not found")
+			} else {
+				writeError(w, http.StatusInternalServerError, "NETWORK_LOOKUP_FAILED", "failed to look up network")
+			}
 			return
 		}
 		if _, err := store.DeleteNetwork(r.Context(), projectID, networkID); err != nil {
-			if errors.Is(err, storepkg.ErrNetworkInUse) {
+			switch {
+			case errors.Is(err, storepkg.ErrNotFound):
+				writeError(w, http.StatusNotFound, "NETWORK_NOT_FOUND", "network was not found")
+			case errors.Is(err, storepkg.ErrNetworkInUse):
 				writeError(w, http.StatusConflict, "NETWORK_IN_USE", "network still has subnets")
-				return
+			default:
+				writeError(w, http.StatusInternalServerError, "NETWORK_DELETE_FAILED", "failed to delete network")
 			}
-			writeError(w, http.StatusInternalServerError, "NETWORK_DELETE_FAILED", "failed to delete network")
 			return
 		}
 		if err := networkProvisioner.DeleteNetwork(r.Context(), network); err != nil {
@@ -466,12 +473,18 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 		}
 		network, err := store.GetNetwork(r.Context(), projectID, networkID)
 		if err != nil {
-			writeError(w, http.StatusNotFound, "NETWORK_NOT_FOUND", "network was not found")
+			if errors.Is(err, storepkg.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "NETWORK_NOT_FOUND", "network was not found")
+			} else {
+				writeError(w, http.StatusInternalServerError, "NETWORK_LOOKUP_FAILED", "failed to look up network")
+			}
 			return
 		}
 		subnet, err := store.CreateSubnet(r.Context(), projectID, networkID, request.Name, request.CIDR, request.Type, request.Gateway)
 		if err != nil {
 			switch {
+			case errors.Is(err, storepkg.ErrNotFound):
+				writeError(w, http.StatusNotFound, "NETWORK_NOT_FOUND", "network was not found")
 			case errors.Is(err, storepkg.ErrSubnetCIDRInvalid):
 				writeError(w, http.StatusBadRequest, "SUBNET_CIDR_INVALID", "subnet cidr is invalid")
 			case errors.Is(err, storepkg.ErrSubnetCIDROverlap):
@@ -494,20 +507,35 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 		subnetID := chi.URLParam(r, "subnetID")
 		network, err := store.GetNetwork(r.Context(), projectID, networkID)
 		if err != nil {
-			writeError(w, http.StatusNotFound, "NETWORK_NOT_FOUND", "network was not found")
+			if errors.Is(err, storepkg.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "NETWORK_NOT_FOUND", "network was not found")
+			} else {
+				writeError(w, http.StatusInternalServerError, "NETWORK_LOOKUP_FAILED", "failed to look up network")
+			}
 			return
 		}
 		subnet, err := store.GetSubnet(r.Context(), projectID, subnetID)
 		if err != nil {
+			if errors.Is(err, storepkg.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "SUBNET_NOT_FOUND", "subnet was not found")
+			} else {
+				writeError(w, http.StatusInternalServerError, "SUBNET_LOOKUP_FAILED", "failed to look up subnet")
+			}
+			return
+		}
+		if subnet.NetworkID != networkID {
 			writeError(w, http.StatusNotFound, "SUBNET_NOT_FOUND", "subnet was not found")
 			return
 		}
 		if _, err := store.DeleteSubnet(r.Context(), projectID, subnetID); err != nil {
-			if errors.Is(err, storepkg.ErrSubnetInUse) {
+			switch {
+			case errors.Is(err, storepkg.ErrNotFound):
+				writeError(w, http.StatusNotFound, "SUBNET_NOT_FOUND", "subnet was not found")
+			case errors.Is(err, storepkg.ErrSubnetInUse):
 				writeError(w, http.StatusConflict, "SUBNET_IN_USE", "subnet still has virtual machines attached")
-				return
+			default:
+				writeError(w, http.StatusInternalServerError, "SUBNET_DELETE_FAILED", "failed to delete subnet")
 			}
-			writeError(w, http.StatusInternalServerError, "SUBNET_DELETE_FAILED", "failed to delete subnet")
 			return
 		}
 		if err := networkProvisioner.DeleteSubnet(r.Context(), network.OVNVPCName, subnet); err != nil {

@@ -10,16 +10,18 @@ import (
 	"time"
 
 	"github.com/kloudia/kloudia/backend/internal/domain"
+	storepkg "github.com/kloudia/kloudia/backend/internal/store"
 )
 
 type fakeCatalogStore struct {
-	projects    []domain.Project
-	flavors     []domain.Flavor
-	images      []domain.Image
-	vms         []domain.VirtualMachine
-	createdPlan domain.VirtualMachineProvisioningPlan
-	networks    []domain.Network
-	subnets     []domain.Subnet
+	projects        []domain.Project
+	flavors         []domain.Flavor
+	images          []domain.Image
+	vms             []domain.VirtualMachine
+	createdPlan     domain.VirtualMachineProvisioningPlan
+	networks        []domain.Network
+	subnets         []domain.Subnet
+	createSubnetErr error
 }
 
 type fakeStatusReader struct {
@@ -146,7 +148,7 @@ func (s *fakeCatalogStore) GetNetwork(_ context.Context, projectID string, netwo
 			return n, nil
 		}
 	}
-	return domain.Network{}, errors.New("network not found")
+	return domain.Network{}, storepkg.ErrNotFound
 }
 
 func (s *fakeCatalogStore) CreateNetwork(_ context.Context, projectID string, name string) (domain.Network, error) {
@@ -162,7 +164,7 @@ func (s *fakeCatalogStore) DeleteNetwork(_ context.Context, projectID string, ne
 			return n, nil
 		}
 	}
-	return domain.Network{}, errors.New("network not found")
+	return domain.Network{}, storepkg.ErrNotFound
 }
 
 func (s *fakeCatalogStore) ListSubnets(_ context.Context, projectID string, networkID string) ([]domain.Subnet, error) {
@@ -181,10 +183,13 @@ func (s *fakeCatalogStore) GetSubnet(_ context.Context, projectID string, subnet
 			return sn, nil
 		}
 	}
-	return domain.Subnet{}, errors.New("subnet not found")
+	return domain.Subnet{}, storepkg.ErrNotFound
 }
 
 func (s *fakeCatalogStore) CreateSubnet(_ context.Context, projectID string, networkID string, name string, cidr string, subnetType string, gateway string) (domain.Subnet, error) {
+	if s.createSubnetErr != nil {
+		return domain.Subnet{}, s.createSubnetErr
+	}
 	sn := domain.Subnet{ID: networkID + "-" + name, NetworkID: networkID, ProjectID: projectID, Name: name, CIDR: cidr, Gateway: gateway, Type: subnetType, OVNSubnetName: "kloudia-subnet-" + networkID + "-" + name, NADName: "kloudia-net-" + networkID + "-" + name, Status: "Ready"}
 	s.subnets = append(s.subnets, sn)
 	return sn, nil
@@ -197,7 +202,7 @@ func (s *fakeCatalogStore) DeleteSubnet(_ context.Context, projectID string, sub
 			return sn, nil
 		}
 	}
-	return domain.Subnet{}, errors.New("subnet not found")
+	return domain.Subnet{}, storepkg.ErrNotFound
 }
 
 func TestListProjectsReturnsProjectCatalog(t *testing.T) {
