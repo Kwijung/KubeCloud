@@ -9,6 +9,16 @@ func TestNormalizeCIDRRejectsInvalid(t *testing.T) {
 	if _, err := normalizeCIDR("10.0.0.0/24"); err != nil {
 		t.Fatalf("expected 10.0.0.0/24 to be valid, got %v", err)
 	}
+	// Host-bit masking: host bits must be zeroed to the network address.
+	if got, err := normalizeCIDR("10.0.5.7/24"); err != nil {
+		t.Fatalf("expected 10.0.5.7/24 to be valid, got %v", err)
+	} else if got != "10.0.5.0/24" {
+		t.Fatalf("expected host bits masked to 10.0.5.0/24, got %q", got)
+	}
+	// IPv6 rejection: only IPv4 CIDRs are accepted.
+	if _, err := normalizeCIDR("2001:db8::/32"); err == nil {
+		t.Fatal("expected error for IPv6 CIDR")
+	}
 }
 
 func TestDefaultGatewayIsFirstHost(t *testing.T) {
