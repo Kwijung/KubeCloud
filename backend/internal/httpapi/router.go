@@ -3,11 +3,13 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
 	"github.com/kloudia/kloudia/backend/internal/domain"
+	storepkg "github.com/kloudia/kloudia/backend/internal/store"
 )
 
 type Store interface {
@@ -100,8 +102,8 @@ type NetworkProvisioner interface {
 
 type noopNetworkProvisioner struct{}
 
-func (noopNetworkProvisioner) CreateNetwork(context.Context, domain.Network) error  { return nil }
-func (noopNetworkProvisioner) DeleteNetwork(context.Context, domain.Network) error  { return nil }
+func (noopNetworkProvisioner) CreateNetwork(context.Context, domain.Network) error       { return nil }
+func (noopNetworkProvisioner) DeleteNetwork(context.Context, domain.Network) error       { return nil }
 func (noopNetworkProvisioner) CreateSubnet(context.Context, string, domain.Subnet) error { return nil }
 func (noopNetworkProvisioner) DeleteSubnet(context.Context, string, domain.Subnet) error { return nil }
 
@@ -110,7 +112,7 @@ type Dependencies struct {
 	Store              Store
 	Provisioner        Provisioner
 	StatusReader       StatusReader
-	ConsoleStreamer     ConsoleStreamer
+	ConsoleStreamer    ConsoleStreamer
 	NetworkProvisioner NetworkProvisioner
 }
 
@@ -128,10 +130,10 @@ func NewRouterWithProvisionerAndStatusReader(version string, store Store, provis
 
 func NewRouterWithProvisionerStatusReaderAndConsoleStreamer(version string, store Store, provisioner Provisioner, statusReader StatusReader, consoleStreamer ConsoleStreamer) http.Handler {
 	return NewRouterWithDependencies(Dependencies{
-		Version:        version,
-		Store:          store,
-		Provisioner:    provisioner,
-		StatusReader:   statusReader,
+		Version:         version,
+		Store:           store,
+		Provisioner:     provisioner,
+		StatusReader:    statusReader,
 		ConsoleStreamer: consoleStreamer,
 	})
 }
@@ -155,7 +157,6 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 	if networkProvisioner == nil {
 		networkProvisioner = noopNetworkProvisioner{}
 	}
-	_ = networkProvisioner // used in future network routes (Tasks 13-14)
 	router := chi.NewRouter()
 	router.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"http://localhost:5173"},
@@ -372,6 +373,62 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			writeError(w, http.StatusBadGateway, "VM_CONSOLE_STREAM_FAILED", "failed to stream virtual machine console")
 			return
 		}
+	})
+
+	router.Get("/api/v1/projects/{projectID}/networks", func(w http.ResponseWriter, r *http.Request) {
+		networks, err := store.ListNetworks(r.Context(), chi.URLParam(r, "projectID"))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "NETWORKS_UNAVAILABLE", "failed to list networks")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": networks})
+	})
+
+	router.Post("/api/v1/projects/{projectID}/networks", func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "request body must be valid JSON")
+			return
+		}
+		if request.Name == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_NETWORK_REQUEST", "name is required")
+			return
+		}
+		network, err := store.CreateNetwork(r.Context(), chi.URLParam(r, "projectID"), request.Name)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "NETWORK_CREATE_FAILED", "failed to create network")
+			return
+		}
+		if err := networkProvisioner.CreateNetwork(r.Context(), network); err != nil {
+			writeError(w, http.StatusBadGateway, "NETWORK_PROVISION_FAILED", "failed to provision network")
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"data": network})
+	})
+
+	router.Delete("/api/v1/projects/{projectID}/networks/{networkID}", func(w http.ResponseWriter, r *http.Request) {
+		projectID := chi.URLParam(r, "projectID")
+		networkID := chi.URLParam(r, "networkID")
+		network, err := store.GetNetwork(r.Context(), projectID, networkID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "NETWORK_NOT_FOUND", "network was not found")
+			return
+		}
+		if _, err := store.DeleteNetwork(r.Context(), projectID, networkID); err != nil {
+			if errors.Is(err, storepkg.ErrNetworkInUse) {
+				writeError(w, http.StatusConflict, "NETWORK_IN_USE", "network still has subnets")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "NETWORK_DELETE_FAILED", "failed to delete network")
+			return
+		}
+		if err := networkProvisioner.DeleteNetwork(r.Context(), network); err != nil {
+			writeError(w, http.StatusBadGateway, "NETWORK_DEPROVISION_FAILED", "failed to delete network resources")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	return router
