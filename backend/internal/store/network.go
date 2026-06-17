@@ -115,6 +115,171 @@ RETURNING id, project_id, name, ovn_vpc_name, status, created_at`, id, projectID
 	return n, err
 }
 
+func (p *Postgres) ListSubnets(ctx context.Context, projectID string, networkID string) ([]domain.Subnet, error) {
+	rows, err := p.pool.Query(ctx, `
+SELECT id, network_id, project_id, name, cidr, gateway, type, ovn_subnet_name, nad_name, status, created_at
+FROM subnets
+WHERE project_id = $1 AND network_id = $2
+ORDER BY created_at DESC, name`, projectID, networkID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var subnets []domain.Subnet
+	for rows.Next() {
+		var s domain.Subnet
+		if err := rows.Scan(&s.ID, &s.NetworkID, &s.ProjectID, &s.Name, &s.CIDR, &s.Gateway, &s.Type, &s.OVNSubnetName, &s.NADName, &s.Status, &s.CreatedAt); err != nil {
+			return nil, err
+		}
+		subnets = append(subnets, s)
+	}
+	return subnets, rows.Err()
+}
+
+func (p *Postgres) GetSubnet(ctx context.Context, projectID string, subnetID string) (domain.Subnet, error) {
+	var s domain.Subnet
+	err := p.pool.QueryRow(ctx, `
+SELECT id, network_id, project_id, name, cidr, gateway, type, ovn_subnet_name, nad_name, status, created_at
+FROM subnets
+WHERE project_id = $1 AND id = $2`, projectID, subnetID).
+		Scan(&s.ID, &s.NetworkID, &s.ProjectID, &s.Name, &s.CIDR, &s.Gateway, &s.Type, &s.OVNSubnetName, &s.NADName, &s.Status, &s.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Subnet{}, ErrNotFound
+	}
+	return s, err
+}
+
+func (p *Postgres) CreateSubnet(ctx context.Context, projectID string, networkID string, name string, cidr string, subnetType string, gateway string) (domain.Subnet, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return domain.Subnet{}, errors.New("subnet name is required")
+	}
+	canonicalCIDR, err := normalizeCIDR(cidr)
+	if err != nil {
+		return domain.Subnet{}, err
+	}
+	if strings.TrimSpace(gateway) == "" {
+		gateway, err = defaultGateway(canonicalCIDR)
+		if err != nil {
+			return domain.Subnet{}, err
+		}
+	} else if !cidrContainsHost(canonicalCIDR, gateway) {
+		return domain.Subnet{}, ErrSubnetCIDRInvalid
+	}
+
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return domain.Subnet{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	// Lock the parent network row to serialize concurrent subnet creation within the same VPC.
+	var networkID2 string
+	if err := tx.QueryRow(ctx, `
+SELECT id FROM networks WHERE project_id = $1 AND id = $2
+FOR UPDATE`, projectID, networkID).Scan(&networkID2); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Subnet{}, ErrNotFound
+		}
+		return domain.Subnet{}, err
+	}
+
+	// Reject overlap with existing subnets in the same VPC.
+	rows, err := tx.Query(ctx, `SELECT cidr FROM subnets WHERE network_id = $1`, networkID)
+	if err != nil {
+		return domain.Subnet{}, err
+	}
+	var existingCIDRs []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			rows.Close()
+			return domain.Subnet{}, err
+		}
+		existingCIDRs = append(existingCIDRs, c)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return domain.Subnet{}, err
+	}
+	for _, c := range existingCIDRs {
+		if cidrsOverlap(canonicalCIDR, c) {
+			return domain.Subnet{}, ErrSubnetCIDROverlap
+		}
+	}
+
+	id := makeResourceID(networkID, name)
+	ovnSubnetName := "kloudia-subnet-" + id
+	nadName := "kloudia-net-" + id
+	var s domain.Subnet
+	err = tx.QueryRow(ctx, `
+INSERT INTO subnets (id, network_id, project_id, name, cidr, gateway, type, ovn_subnet_name, nad_name, status)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'Ready')
+RETURNING id, network_id, project_id, name, cidr, gateway, type, ovn_subnet_name, nad_name, status, created_at`,
+		id, networkID, projectID, name, canonicalCIDR, gateway, subnetType, ovnSubnetName, nadName).
+		Scan(&s.ID, &s.NetworkID, &s.ProjectID, &s.Name, &s.CIDR, &s.Gateway, &s.Type, &s.OVNSubnetName, &s.NADName, &s.Status, &s.CreatedAt)
+	if err != nil {
+		return domain.Subnet{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Subnet{}, err
+	}
+	return s, nil
+}
+
+func (p *Postgres) DeleteSubnet(ctx context.Context, projectID string, subnetID string) (domain.Subnet, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return domain.Subnet{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	var s domain.Subnet
+	err = tx.QueryRow(ctx, `
+SELECT id, network_id, project_id, name, cidr, gateway, type, ovn_subnet_name, nad_name, status, created_at
+FROM subnets
+WHERE project_id = $1 AND id = $2
+FOR UPDATE`, projectID, subnetID).
+		Scan(&s.ID, &s.NetworkID, &s.ProjectID, &s.Name, &s.CIDR, &s.Gateway, &s.Type, &s.OVNSubnetName, &s.NADName, &s.Status, &s.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Subnet{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.Subnet{}, err
+	}
+
+	var vmCount int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM virtual_machines WHERE subnet_id = $1`, subnetID).Scan(&vmCount); err != nil {
+		return domain.Subnet{}, err
+	}
+	if vmCount > 0 {
+		return domain.Subnet{}, ErrSubnetInUse
+	}
+
+	if _, err := tx.Exec(ctx, `DELETE FROM subnets WHERE id = $1`, subnetID); err != nil {
+		return domain.Subnet{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Subnet{}, err
+	}
+	return s, nil
+}
+
+func cidrContainsHost(cidr string, host string) bool {
+	prefix, err := netip.ParsePrefix(cidr)
+	if err != nil {
+		return false
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	return prefix.Contains(addr)
+}
+
 func (p *Postgres) DeleteNetwork(ctx context.Context, projectID string, networkID string) (domain.Network, error) {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
