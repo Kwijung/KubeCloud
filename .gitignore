@@ -11,3 +11,4 @@ frontend/vite.config.d.ts
 *.log
 
 backend/api
+build/
