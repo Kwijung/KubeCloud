@@ -159,7 +159,7 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 	}
 	router := chi.NewRouter()
 	router.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:5173"},
+		AllowedOrigins:   []string{"http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:5173", "http://127.0.0.1:5174"},
 		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		AllowCredentials: true,
@@ -353,7 +353,7 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"data": map[string]any{
 				"available": detail.ConsoleAvailable && detail.RuntimeStatus == "Running",
-				"message":   "KubeVirt console subresource is available; browser streaming is not implemented yet",
+				"message":   "KubeVirt console streaming is available while the VM is running",
 			},
 		})
 	})
