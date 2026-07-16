@@ -155,6 +155,30 @@ func TestCreateVirtualMachinePassesSubnetID(t *testing.T) {
 	}
 }
 
+func TestCreateVirtualMachinePassesCloudInit(t *testing.T) {
+	store := &fakeCatalogStore{}
+	provisioner := &recordingProvisioner{}
+	router := NewRouterWithProvisioner("test", store, provisioner)
+	body := bytes.NewBufferString(`{"name":"web-10","imageId":"platform-cirros","flavorId":"small","cloudInit":{"username":"cloudia","password":"cloudia","sshPublicKey":"ssh-ed25519 AAAA test"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/platform/vms", body)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(store.createInputs) != 1 || store.createInputs[0].CloudInit == nil {
+		t.Fatalf("expected cloudInit to reach the store, got %#v", store.createInputs)
+	}
+	if store.createInputs[0].CloudInit.Username != "cloudia" || store.createInputs[0].CloudInit.Password != "cloudia" {
+		t.Fatalf("unexpected cloudInit input: %#v", store.createInputs[0].CloudInit)
+	}
+	if len(provisioner.plans) != 1 || provisioner.plans[0].CloudInit == nil {
+		t.Fatalf("expected cloudInit to reach provisioner, got %#v", provisioner.plans)
+	}
+}
+
 func TestStartAndStopVirtualMachineCallsProvisioner(t *testing.T) {
 	store := &fakeCatalogStore{
 		vms: []domain.VirtualMachine{{

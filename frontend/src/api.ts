@@ -99,6 +99,11 @@ export type CreateVirtualMachineRequest = {
   imageId: string;
   flavorId: string;
   subnetId?: string;
+  cloudInit?: {
+    username?: string;
+    password?: string;
+    sshPublicKey?: string;
+  };
 };
 
 type ListResponse<T> = {

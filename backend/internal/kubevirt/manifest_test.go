@@ -1,6 +1,7 @@
 package kubevirt
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/kloudia/kloudia/backend/internal/domain"
@@ -60,6 +61,73 @@ func TestBuildResourcesUsesRunStrategyAndDataVolumeSource(t *testing.T) {
 	requests := resourceRequests["requests"].(map[string]any)
 	if requests["memory"] != "512Mi" {
 		t.Fatalf("expected 512Mi memory, got %#v", requests["memory"])
+	}
+}
+
+func TestBuildResourcesAddsCloudInitNoCloudWhenProvided(t *testing.T) {
+	plan := domain.VirtualMachineProvisioningPlan{
+		VirtualMachine: domain.VirtualMachine{ID: "platform-web-01", ProjectID: "platform", Name: "web-01"},
+		Image:          domain.Image{ID: "platform-cirros", SourceURL: "https://example.invalid/cirros.img"},
+		Flavor:         domain.Flavor{ID: "small", CPU: 1, MemoryBytes: 512 * 1024 * 1024, RootDiskBytes: 2 * 1024 * 1024 * 1024},
+		CloudInit: &domain.CloudInitConfig{
+			Username:     "cloudia",
+			Password:     "cloudia",
+			SSHPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey cloudia@test",
+		},
+	}
+
+	resources := BuildResources("kloudia-vms", "test-delete", plan)
+
+	templateSpec := resources.VirtualMachine["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+	volumes := templateSpec["volumes"].([]any)
+	if len(volumes) != 2 {
+		t.Fatalf("expected rootdisk and cloudinitdisk volumes, got %#v", volumes)
+	}
+	cloudInit := volumes[1].(map[string]any)["cloudInitNoCloud"].(map[string]any)
+	userData := cloudInit["userData"].(string)
+	for _, want := range []string{
+		"#cloud-config",
+		"name: cloudia",
+		"shell: /bin/sh",
+		"ssh_pwauth: true",
+		"cloudia:cloudia",
+		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey cloudia@test",
+	} {
+		if !strings.Contains(userData, want) {
+			t.Fatalf("expected userData to contain %q, got:\n%s", want, userData)
+		}
+	}
+	disks := templateSpec["domain"].(map[string]any)["devices"].(map[string]any)["disks"].([]any)
+	if len(disks) != 2 {
+		t.Fatalf("expected rootdisk and cloudinitdisk disks, got %#v", disks)
+	}
+	if disks[1].(map[string]any)["name"] != "cloudinitdisk" {
+		t.Fatalf("expected cloudinitdisk device, got %#v", disks[1])
+	}
+}
+
+func TestBuildResourcesUsesCirrOSDefaultUserWithoutDuplicateUserBlock(t *testing.T) {
+	plan := domain.VirtualMachineProvisioningPlan{
+		VirtualMachine: domain.VirtualMachine{ID: "platform-web-01", ProjectID: "platform", Name: "web-01"},
+		Image:          domain.Image{ID: "platform-cirros", SourceURL: "https://example.invalid/cirros.img"},
+		Flavor:         domain.Flavor{ID: "small", CPU: 1, MemoryBytes: 512 * 1024 * 1024, RootDiskBytes: 2 * 1024 * 1024 * 1024},
+		CloudInit: &domain.CloudInitConfig{
+			Username: "cirros",
+			Password: "gocubsgo",
+		},
+	}
+
+	resources := BuildResources("kloudia-vms", "test-delete", plan)
+
+	templateSpec := resources.VirtualMachine["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+	volumes := templateSpec["volumes"].([]any)
+	cloudInit := volumes[1].(map[string]any)["cloudInitNoCloud"].(map[string]any)
+	userData := cloudInit["userData"].(string)
+	if strings.Contains(userData, "name: cirros") {
+		t.Fatalf("expected CirrOS default user to avoid duplicate user block, got:\n%s", userData)
+	}
+	if !strings.Contains(userData, "cirros:gocubsgo") {
+		t.Fatalf("expected userData to set CirrOS password, got:\n%s", userData)
 	}
 }
 

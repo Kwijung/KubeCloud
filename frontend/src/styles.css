@@ -250,6 +250,10 @@ nav {
   font: inherit;
 }
 
+.create-form .wide-input {
+  grid-column: span 2;
+}
+
 .error-row {
   padding: 10px 16px;
   border-bottom: 1px solid #fecaca;
@@ -539,13 +543,17 @@ nav {
   inset: 0;
   z-index: 30;
   display: grid;
-  align-items: end;
+  align-items: center;
   padding: 28px;
   background: rgba(15, 23, 42, 0.38);
 }
 
 .console-panel {
   width: min(980px, 100%);
+  height: min(680px, calc(100vh - 56px));
+  max-width: calc(100vw - 56px);
+  max-height: calc(100vh - 56px);
+  min-width: min(560px, calc(100vw - 24px));
   min-height: 420px;
   justify-self: center;
   display: grid;
@@ -554,7 +562,8 @@ nav {
   border-radius: 8px;
   background: #0b1020;
   box-shadow: 0 24px 70px rgba(15, 23, 42, 0.32);
-  overflow: hidden;
+  overflow: auto;
+  resize: both;
 }
 
 .console-header {
@@ -585,12 +594,13 @@ nav {
 }
 
 .console-terminal {
-  min-height: 360px;
+  min-height: 0;
   padding: 14px;
   outline: none;
   background: #050816;
   color: #d1fae5;
   cursor: text;
+  overflow: auto;
 }
 
 .console-terminal:focus {
@@ -599,9 +609,10 @@ nav {
 
 .console-terminal pre {
   margin: 0;
-  min-height: 100%;
+  min-height: calc(100% - 1px);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  word-break: break-word;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 13px;
   line-height: 1.45;
@@ -707,7 +718,10 @@ nav {
   }
 
   .console-panel {
+    width: calc(100vw - 24px);
+    min-width: 0;
     min-height: 70vh;
+    resize: vertical;
   }
 
   .console-header {

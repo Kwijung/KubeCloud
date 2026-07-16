@@ -115,6 +115,9 @@ func (s *fakeCatalogStore) CreateVirtualMachine(_ context.Context, projectID str
 			Status:    "Provisioning",
 		}
 	}
+	if plan.CloudInit == nil {
+		plan.CloudInit = input.CloudInit
+	}
 	return plan, nil
 }
 

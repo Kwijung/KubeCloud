@@ -1,6 +1,6 @@
 import { Activity, Boxes, CircleStop, Cpu, HardDrive, Image, Network, Play, Server, Terminal, Trash2 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { FormEvent, KeyboardEvent } from "react";
+import type { ClipboardEvent, FormEvent, KeyboardEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createNetwork,
@@ -39,11 +39,15 @@ export function App() {
   const [selectedImageId, setSelectedImageId] = useState("");
   const [selectedFlavorId, setSelectedFlavorId] = useState("");
   const [selectedSubnetId, setSelectedSubnetId] = useState("");
+  const [cloudInitUsername, setCloudInitUsername] = useState("cirros");
+  const [cloudInitPassword, setCloudInitPassword] = useState("gocubsgo");
+  const [cloudInitSSHPublicKey, setCloudInitSSHPublicKey] = useState("");
   const [selectedVMId, setSelectedVMId] = useState("");
   const [consoleVMId, setConsoleVMId] = useState("");
   const [consoleOutput, setConsoleOutput] = useState("");
   const [consoleState, setConsoleState] = useState<"idle" | "connecting" | "connected" | "disconnected" | "error">("idle");
   const consoleSocket = useRef<WebSocket | null>(null);
+  const consoleTerminalRef = useRef<HTMLDivElement | null>(null);
   const [selectedNetworkId, setSelectedNetworkId] = useState("");
   const [newNetworkName, setNewNetworkName] = useState("");
   const [newSubnetName, setNewSubnetName] = useState("");
@@ -95,6 +99,11 @@ export function App() {
         imageId: selectedImageId,
         flavorId: selectedFlavorId,
         subnetId: selectedSubnetId || undefined,
+        cloudInit: {
+          username: cloudInitUsername.trim(),
+          password: cloudInitPassword.trim(),
+          sshPublicKey: cloudInitSSHPublicKey.trim() || undefined,
+        },
       }),
     onSuccess: () => {
       setVmName("");
@@ -178,6 +187,19 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (consoleVMId !== "") {
+      consoleTerminalRef.current?.focus();
+    }
+  }, [consoleVMId]);
+
+  useEffect(() => {
+    const terminal = consoleTerminalRef.current;
+    if (terminal) {
+      terminal.scrollTop = terminal.scrollHeight;
+    }
+  }, [consoleOutput]);
+
+  useEffect(() => {
     if (!selectedProjectId && projects.data && projects.data.length > 0) {
       setSelectedProjectId(projects.data[0].id);
     }
@@ -257,7 +279,7 @@ export function App() {
     };
     socket.onclose = () => {
       setConsoleState((current) => (current === "error" ? "error" : "disconnected"));
-      setConsoleOutput((current) => `${current}\n${t.consoleDisconnected}\n`);
+      setConsoleOutput((current) => (current.endsWith(`\n${t.consoleDisconnected}\n`) ? current : `${current}\n${t.consoleDisconnected}\n`));
     };
   }
 
@@ -279,6 +301,19 @@ export function App() {
     }
     event.preventDefault();
     socket.send(value);
+  }
+
+  function handleConsolePaste(event: ClipboardEvent<HTMLDivElement>) {
+    const socket = consoleSocket.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    const text = event.clipboardData.getData("text");
+    if (text === "") {
+      return;
+    }
+    event.preventDefault();
+    socket.send(text.replace(/\n/g, "\r"));
   }
 
   return (
@@ -443,6 +478,26 @@ export function App() {
                   </option>
                 ))}
               </select>
+              <input
+                aria-label={t.cloudInitUsername}
+                placeholder={t.cloudInitUsername}
+                value={cloudInitUsername}
+                onChange={(event) => setCloudInitUsername(event.target.value)}
+              />
+              <input
+                aria-label={t.cloudInitPassword}
+                placeholder={t.cloudInitPassword}
+                type="password"
+                value={cloudInitPassword}
+                onChange={(event) => setCloudInitPassword(event.target.value)}
+              />
+              <input
+                aria-label={t.cloudInitSSHPublicKey}
+                className="wide-input"
+                placeholder={t.cloudInitSSHPublicKey}
+                value={cloudInitSSHPublicKey}
+                onChange={(event) => setCloudInitSSHPublicKey(event.target.value)}
+              />
               <button className="primary-action" disabled={!canCreateVM || createVM.isPending}>
                 <Play size={16} />
                 {createVM.isPending ? t.creating : t.createVM}
@@ -486,7 +541,7 @@ export function App() {
                       <CircleStop size={16} />
                       <span>{t.stopVM}</span>
                     </button>
-                    <button className="icon-action" onClick={() => openConsole(vm.id)}>
+                    <button className="icon-action" disabled={vm.status !== "Running"} onClick={() => openConsole(vm.id)}>
                       <Terminal size={16} />
                       <span>{t.console}</span>
                     </button>
@@ -776,15 +831,24 @@ export function App() {
                       ? t.consoleConnecting
                       : consoleState === "connected"
                         ? t.consoleConnected
-                        : t.consoleDisconnected}
+                        : consoleState === "error"
+                          ? t.consoleUnavailable
+                          : t.consoleDisconnected}
                   </span>
+                  <span>{t.consoleLoginHint}</span>
                 </div>
                 <button className="icon-action" onClick={closeConsole}>
                   <CircleStop size={16} />
                   <span>{t.consoleClose}</span>
                 </button>
               </div>
-              <div className="console-terminal" tabIndex={0} onKeyDown={handleConsoleKeyDown}>
+              <div
+                className="console-terminal"
+                ref={consoleTerminalRef}
+                tabIndex={0}
+                onKeyDown={handleConsoleKeyDown}
+                onPaste={handleConsolePaste}
+              >
                 <pre>{consoleOutput || t.consoleFocusHint}</pre>
               </div>
             </div>
@@ -800,16 +864,15 @@ function formatGiB(bytes: number): number {
 }
 
 async function decodeConsoleMessage(data: MessageEvent["data"]): Promise<string> {
+  let text = "";
   if (typeof data === "string") {
-    return data;
+    text = data;
+  } else if (data instanceof Blob) {
+    text = await data.text();
+  } else if (data instanceof ArrayBuffer) {
+    text = new TextDecoder().decode(data);
   }
-  if (data instanceof Blob) {
-    return data.text();
-  }
-  if (data instanceof ArrayBuffer) {
-    return new TextDecoder().decode(data);
-  }
-  return "";
+  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
 function consoleKeyValue(event: KeyboardEvent<HTMLDivElement>): string {
@@ -825,6 +888,20 @@ function consoleKeyValue(event: KeyboardEvent<HTMLDivElement>): string {
       return "\t";
     case "Escape":
       return "\x1b";
+    case "ArrowUp":
+      return "\x1b[A";
+    case "ArrowDown":
+      return "\x1b[B";
+    case "ArrowRight":
+      return "\x1b[C";
+    case "ArrowLeft":
+      return "\x1b[D";
+    case "Home":
+      return "\x1b[H";
+    case "End":
+      return "\x1b[F";
+    case "Delete":
+      return "\x1b[3~";
     default:
       return "";
   }

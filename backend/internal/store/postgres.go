@@ -334,7 +334,26 @@ RETURNING id, project_id, name, image_id, flavor_id, subnet_id, status, created_
 		Image:          image,
 		Flavor:         flavor,
 		Subnet:         subnet,
+		CloudInit:      normalizeCloudInit(input.CloudInit),
 	}, nil
+}
+
+func normalizeCloudInit(input *domain.CloudInitConfig) *domain.CloudInitConfig {
+	if input == nil {
+		return nil
+	}
+	cloudInit := domain.CloudInitConfig{
+		Username:     strings.TrimSpace(input.Username),
+		Password:     strings.TrimSpace(input.Password),
+		SSHPublicKey: strings.TrimSpace(input.SSHPublicKey),
+	}
+	if cloudInit.Username == "" && cloudInit.Password == "" && cloudInit.SSHPublicKey == "" {
+		return nil
+	}
+	if cloudInit.Username == "" {
+		cloudInit.Username = "cloudia"
+	}
+	return &cloudInit
 }
 
 func makeVirtualMachineID(projectID string, name string) string {

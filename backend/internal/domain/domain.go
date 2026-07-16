@@ -63,10 +63,17 @@ type VirtualMachine struct {
 }
 
 type CreateVirtualMachineInput struct {
-	Name     string
-	ImageID  string
-	FlavorID string
-	SubnetID string
+	Name      string
+	ImageID   string
+	FlavorID  string
+	SubnetID  string
+	CloudInit *CloudInitConfig
+}
+
+type CloudInitConfig struct {
+	Username     string `json:"username"`
+	Password     string `json:"password"`
+	SSHPublicKey string `json:"sshPublicKey"`
 }
 
 type VirtualMachineProvisioningPlan struct {
@@ -74,6 +81,7 @@ type VirtualMachineProvisioningPlan struct {
 	Image          Image
 	Flavor         Flavor
 	Subnet         *Subnet
+	CloudInit      *CloudInitConfig
 }
 
 type VirtualMachineDetail struct {

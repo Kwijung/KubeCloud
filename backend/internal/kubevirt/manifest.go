@@ -2,6 +2,7 @@ package kubevirt
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/kloudia/kloudia/backend/internal/domain"
 )
@@ -88,11 +89,69 @@ func BuildResources(namespace string, storageClassName string, plan domain.Virtu
 	if plan.Subnet != nil {
 		applyMultusNetwork(vm, namespace, *plan.Subnet)
 	}
+	if plan.CloudInit != nil {
+		applyCloudInit(vm, *plan.CloudInit)
+	}
 
 	return Resources{
 		DataVolume:     dataVolume,
 		VirtualMachine: vm,
 	}
+}
+
+func applyCloudInit(vm map[string]any, cloudInit domain.CloudInitConfig) {
+	templateSpec := vm["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+	devices := templateSpec["domain"].(map[string]any)["devices"].(map[string]any)
+	disks := devices["disks"].([]any)
+	devices["disks"] = append(disks, map[string]any{
+		"name": "cloudinitdisk",
+		"disk": map[string]any{"bus": "virtio"},
+	})
+	volumes := templateSpec["volumes"].([]any)
+	templateSpec["volumes"] = append(volumes, map[string]any{
+		"name": "cloudinitdisk",
+		"cloudInitNoCloud": map[string]any{
+			"userData": buildCloudInitUserData(cloudInit),
+		},
+	})
+}
+
+func buildCloudInitUserData(cloudInit domain.CloudInitConfig) string {
+	username := sanitizeCloudInitLine(cloudInit.Username)
+	if username == "" {
+		username = "cirros"
+	}
+	password := sanitizeCloudInitLine(cloudInit.Password)
+	sshPublicKey := sanitizeCloudInitLine(cloudInit.SSHPublicKey)
+	var b strings.Builder
+	b.WriteString("#cloud-config\n")
+	b.WriteString("users:\n")
+	b.WriteString("  - default\n")
+	if username != "cirros" {
+		fmt.Fprintf(&b, "  - name: %s\n", username)
+		b.WriteString("    sudo: ALL=(ALL) NOPASSWD:ALL\n")
+		b.WriteString("    shell: /bin/sh\n")
+		b.WriteString("    lock_passwd: false\n")
+		if sshPublicKey != "" {
+			b.WriteString("    ssh_authorized_keys:\n")
+			fmt.Fprintf(&b, "      - %s\n", sshPublicKey)
+		}
+	}
+	b.WriteString("ssh_pwauth: true\n")
+	if password != "" {
+		b.WriteString("chpasswd:\n")
+		b.WriteString("  expire: false\n")
+		b.WriteString("  list: |\n")
+		fmt.Fprintf(&b, "    %s:%s\n", username, password)
+	}
+	return b.String()
+}
+
+func sanitizeCloudInitLine(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.ReplaceAll(value, "\r", "")
+	value = strings.ReplaceAll(value, "\n", "")
+	return value
 }
 
 func applyMultusNetwork(vm map[string]any, namespace string, subnet domain.Subnet) {

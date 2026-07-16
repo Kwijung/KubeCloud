@@ -254,10 +254,11 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 
 	router.Post("/api/v1/projects/{projectID}/vms", func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
-			Name     string `json:"name"`
-			ImageID  string `json:"imageId"`
-			FlavorID string `json:"flavorId"`
-			SubnetID string `json:"subnetId"`
+			Name      string                  `json:"name"`
+			ImageID   string                  `json:"imageId"`
+			FlavorID  string                  `json:"flavorId"`
+			SubnetID  string                  `json:"subnetId"`
+			CloudInit *domain.CloudInitConfig `json:"cloudInit"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "request body must be valid JSON")
@@ -268,10 +269,11 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			return
 		}
 		plan, err := store.CreateVirtualMachine(r.Context(), chi.URLParam(r, "projectID"), domain.CreateVirtualMachineInput{
-			Name:     request.Name,
-			ImageID:  request.ImageID,
-			FlavorID: request.FlavorID,
-			SubnetID: request.SubnetID,
+			Name:      request.Name,
+			ImageID:   request.ImageID,
+			FlavorID:  request.FlavorID,
+			SubnetID:  request.SubnetID,
+			CloudInit: request.CloudInit,
 		})
 		if err != nil {
 			if errors.Is(err, storepkg.ErrNotFound) {
