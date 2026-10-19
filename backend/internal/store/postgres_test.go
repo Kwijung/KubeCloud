@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -163,5 +164,47 @@ func TestPostgresDeletesVirtualMachineRecord(t *testing.T) {
 	_, err = db.GetVirtualMachine(ctx, "platform", plan.VirtualMachine.ID)
 	if err == nil {
 		t.Fatal("expected get deleted virtual machine to fail")
+	}
+}
+
+func TestPostgresRejectsDeletingNATGatewayAnchorWhileOtherPublicSubnetsRemain(t *testing.T) {
+	databaseURL := os.Getenv("KLOUDIA_STORE_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("KLOUDIA_STORE_TEST_DATABASE_URL is required for store integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	db, err := NewPostgres(databaseURL)
+	if err != nil {
+		t.Fatalf("new postgres: %v", err)
+	}
+	defer db.Close()
+	if err := db.ApplySchema(ctx); err != nil {
+		t.Fatalf("apply schema: %v", err)
+	}
+	network, err := db.CreateNetwork(ctx, "platform", "natgw-anchor-"+time.Now().Format("150405.000000"))
+	if err != nil {
+		t.Fatalf("create network: %v", err)
+	}
+	anchor, err := db.CreateSubnet(ctx, "platform", network.ID, "a", "10.0.0.0/24", "public", "")
+	if err != nil {
+		t.Fatalf("create anchor subnet: %v", err)
+	}
+	other, err := db.CreateSubnet(ctx, "platform", network.ID, "b", "10.0.1.0/24", "public", "")
+	if err != nil {
+		t.Fatalf("create second public subnet: %v", err)
+	}
+
+	if _, err := db.DeleteSubnet(ctx, "platform", anchor.ID); !errors.Is(err, ErrSubnetHostsNATGateway) {
+		t.Fatalf("expected ErrSubnetHostsNATGateway, got %v", err)
+	}
+	if _, err := db.DeleteSubnet(ctx, "platform", other.ID); err != nil {
+		t.Fatalf("delete non-anchor subnet: %v", err)
+	}
+	if _, err := db.DeleteSubnet(ctx, "platform", anchor.ID); err != nil {
+		t.Fatalf("delete last public subnet: %v", err)
+	}
+	if _, err := db.DeleteNetwork(ctx, "platform", network.ID); err != nil {
+		t.Fatalf("delete network: %v", err)
 	}
 }

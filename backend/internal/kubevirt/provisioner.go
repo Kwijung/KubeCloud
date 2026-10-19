@@ -10,6 +10,8 @@ import (
 type Applier interface {
 	Apply(ctx context.Context, resource map[string]any) error
 	Delete(ctx context.Context, resource map[string]any) error
+	// Patch merge-patches resource onto the existing object with the same name.
+	Patch(ctx context.Context, resource map[string]any) error
 	SetVirtualMachineRunStrategy(ctx context.Context, namespace string, name string, runStrategy string) error
 }
 

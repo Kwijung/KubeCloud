@@ -23,6 +23,7 @@ type fakeCatalogStore struct {
 	networks        []domain.Network
 	subnets         []domain.Subnet
 	createSubnetErr error
+	deleteSubnetErr error
 }
 
 type fakeStatusReader struct {
@@ -204,6 +205,9 @@ func (s *fakeCatalogStore) CreateSubnet(_ context.Context, projectID string, net
 }
 
 func (s *fakeCatalogStore) DeleteSubnet(_ context.Context, projectID string, subnetID string) (domain.Subnet, error) {
+	if s.deleteSubnetErr != nil {
+		return domain.Subnet{}, s.deleteSubnetErr
+	}
 	for i, sn := range s.subnets {
 		if sn.ProjectID == projectID && sn.ID == subnetID {
 			s.subnets = append(s.subnets[:i], s.subnets[i+1:]...)

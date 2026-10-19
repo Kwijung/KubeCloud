@@ -10,6 +10,7 @@ import (
 type recordingApplier struct {
 	resources        []map[string]any
 	deletedResources []map[string]any
+	patchedResources []map[string]any
 	runStrategies    []string
 }
 
@@ -20,6 +21,11 @@ func (a *recordingApplier) Apply(_ context.Context, resource map[string]any) err
 
 func (a *recordingApplier) Delete(_ context.Context, resource map[string]any) error {
 	a.deletedResources = append(a.deletedResources, resource)
+	return nil
+}
+
+func (a *recordingApplier) Patch(_ context.Context, resource map[string]any) error {
+	a.patchedResources = append(a.patchedResources, resource)
 	return nil
 }
 

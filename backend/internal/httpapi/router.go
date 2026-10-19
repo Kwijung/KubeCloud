@@ -96,16 +96,41 @@ func (noopConsoleStreamer) StreamVirtualMachineConsole(http.ResponseWriter, *htt
 type NetworkProvisioner interface {
 	CreateNetwork(ctx context.Context, network domain.Network) error
 	DeleteNetwork(ctx context.Context, network domain.Network) error
-	CreateSubnet(ctx context.Context, ovnVPCName string, subnet domain.Subnet) error
-	DeleteSubnet(ctx context.Context, ovnVPCName string, subnet domain.Subnet) error
+	// publicSubnets are the VPC's public subnets including the new one; they drive the shared NAT gateway and egress routes.
+	CreateSubnet(ctx context.Context, ovnVPCName string, subnet domain.Subnet, publicSubnets []domain.Subnet) error
+	// remainingPublicSubnets are the VPC's public subnets left once this one is deleted.
+	DeleteSubnet(ctx context.Context, ovnVPCName string, subnet domain.Subnet, remainingPublicSubnets []domain.Subnet) error
 }
 
 type noopNetworkProvisioner struct{}
 
-func (noopNetworkProvisioner) CreateNetwork(context.Context, domain.Network) error       { return nil }
-func (noopNetworkProvisioner) DeleteNetwork(context.Context, domain.Network) error       { return nil }
-func (noopNetworkProvisioner) CreateSubnet(context.Context, string, domain.Subnet) error { return nil }
-func (noopNetworkProvisioner) DeleteSubnet(context.Context, string, domain.Subnet) error { return nil }
+func (noopNetworkProvisioner) CreateNetwork(context.Context, domain.Network) error { return nil }
+func (noopNetworkProvisioner) DeleteNetwork(context.Context, domain.Network) error { return nil }
+func (noopNetworkProvisioner) CreateSubnet(context.Context, string, domain.Subnet, []domain.Subnet) error {
+	return nil
+}
+func (noopNetworkProvisioner) DeleteSubnet(context.Context, string, domain.Subnet, []domain.Subnet) error {
+	return nil
+}
+
+// publicSubnetsOf lists the public subnets in subnet's VPC, leaving out excludeID. Private subnets do not
+// touch the NAT gateway, so they get nil without a lookup.
+func publicSubnetsOf(ctx context.Context, store Store, subnet domain.Subnet, excludeID string) ([]domain.Subnet, error) {
+	if subnet.Type != "public" {
+		return nil, nil
+	}
+	subnets, err := store.ListSubnets(ctx, subnet.ProjectID, subnet.NetworkID)
+	if err != nil {
+		return nil, err
+	}
+	var public []domain.Subnet
+	for _, s := range subnets {
+		if s.Type == "public" && s.ID != excludeID {
+			public = append(public, s)
+		}
+	}
+	return public, nil
+}
 
 type Dependencies struct {
 	Version            string
@@ -504,7 +529,13 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			}
 			return
 		}
-		if err := networkProvisioner.CreateSubnet(r.Context(), network.OVNVPCName, subnet); err != nil {
+		publicSubnets, err := publicSubnetsOf(r.Context(), store, subnet, "")
+		if err != nil {
+			_, _ = store.DeleteSubnet(r.Context(), projectID, subnet.ID)
+			writeError(w, http.StatusInternalServerError, "SUBNET_CREATE_FAILED", "failed to create subnet")
+			return
+		}
+		if err := networkProvisioner.CreateSubnet(r.Context(), network.OVNVPCName, subnet, publicSubnets); err != nil {
 			_, _ = store.DeleteSubnet(r.Context(), projectID, subnet.ID)
 			writeError(w, http.StatusBadGateway, "SUBNET_PROVISION_FAILED", "failed to provision subnet")
 			return
@@ -538,18 +569,27 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			writeError(w, http.StatusNotFound, "SUBNET_NOT_FOUND", "subnet was not found")
 			return
 		}
+		// The store rejects deleting the NAT gateway anchor while other public subnets remain, so the
+		// gateway goes only with the VPC's last public subnet.
+		remainingPublicSubnets, err := publicSubnetsOf(r.Context(), store, subnet, subnet.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "SUBNET_DELETE_FAILED", "failed to delete subnet")
+			return
+		}
 		if _, err := store.DeleteSubnet(r.Context(), projectID, subnetID); err != nil {
 			switch {
 			case errors.Is(err, storepkg.ErrNotFound):
 				writeError(w, http.StatusNotFound, "SUBNET_NOT_FOUND", "subnet was not found")
 			case errors.Is(err, storepkg.ErrSubnetInUse):
 				writeError(w, http.StatusConflict, "SUBNET_IN_USE", "subnet still has virtual machines attached")
+			case errors.Is(err, storepkg.ErrSubnetHostsNATGateway):
+				writeError(w, http.StatusConflict, "SUBNET_HOSTS_NAT_GATEWAY", "subnet hosts the vpc nat gateway; delete the other public subnets first")
 			default:
 				writeError(w, http.StatusInternalServerError, "SUBNET_DELETE_FAILED", "failed to delete subnet")
 			}
 			return
 		}
-		if err := networkProvisioner.DeleteSubnet(r.Context(), network.OVNVPCName, subnet); err != nil {
+		if err := networkProvisioner.DeleteSubnet(r.Context(), network.OVNVPCName, subnet, remainingPublicSubnets); err != nil {
 			writeError(w, http.StatusBadGateway, "SUBNET_DEPROVISION_FAILED", "failed to delete subnet resources")
 			return
 		}

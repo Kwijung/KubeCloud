@@ -17,6 +17,8 @@ var (
 	ErrSubnetCIDROverlap = errors.New("subnet cidr overlaps an existing subnet in the same vpc")
 	// ErrSubnetInUse is returned when deleting a subnet that still has VMs attached.
 	ErrSubnetInUse = errors.New("subnet still has virtual machines attached")
+	// ErrSubnetHostsNATGateway is returned when deleting the public subnet that hosts the VPC NAT gateway while other public subnets still depend on it.
+	ErrSubnetHostsNATGateway = errors.New("subnet hosts the vpc nat gateway used by other public subnets")
 	// ErrNetworkInUse is returned when deleting a VPC that still has subnets.
 	ErrNetworkInUse = errors.New("network still has subnets")
 	// ErrNotFound is returned when a network or subnet does not exist.
@@ -258,6 +260,20 @@ FOR UPDATE`, projectID, subnetID).
 		return domain.Subnet{}, ErrSubnetInUse
 	}
 
+	if s.Type == "public" {
+		// Lock the parent network row so a concurrent public subnet creation cannot slip past this check.
+		if _, err := tx.Exec(ctx, `SELECT id FROM networks WHERE id = $1 FOR UPDATE`, s.NetworkID); err != nil {
+			return domain.Subnet{}, err
+		}
+		publicSubnets, err := listPublicSubnets(ctx, tx, s.NetworkID)
+		if err != nil {
+			return domain.Subnet{}, err
+		}
+		if anchor, ok := domain.NATGatewayAnchor(publicSubnets); ok && anchor.ID == s.ID && len(publicSubnets) > 1 {
+			return domain.Subnet{}, ErrSubnetHostsNATGateway
+		}
+	}
+
 	if _, err := tx.Exec(ctx, `DELETE FROM subnets WHERE id = $1`, subnetID); err != nil {
 		return domain.Subnet{}, err
 	}
@@ -266,6 +282,26 @@ FOR UPDATE`, projectID, subnetID).
 		return domain.Subnet{}, err
 	}
 	return s, nil
+}
+
+func listPublicSubnets(ctx context.Context, tx pgx.Tx, networkID string) ([]domain.Subnet, error) {
+	rows, err := tx.Query(ctx, `
+SELECT id, type, created_at FROM subnets
+WHERE network_id = $1 AND type = 'public'`, networkID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var subnets []domain.Subnet
+	for rows.Next() {
+		var s domain.Subnet
+		if err := rows.Scan(&s.ID, &s.Type, &s.CreatedAt); err != nil {
+			return nil, err
+		}
+		subnets = append(subnets, s)
+	}
+	return subnets, rows.Err()
 }
 
 // isUsableHostGateway reports whether host is a valid gateway address within cidr —

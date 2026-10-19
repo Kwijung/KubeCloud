@@ -51,6 +51,24 @@ type Subnet struct {
 	CreatedAt     time.Time `json:"createdAt"`
 }
 
+// NATGatewayAnchor returns the public subnet that hosts its VPC's shared NAT gateway: the earliest
+// created public subnet, ties broken by ID. The anchor cannot be deleted while other public subnets
+// remain, so it stays the earliest one for the gateway's whole lifetime.
+func NATGatewayAnchor(subnets []Subnet) (Subnet, bool) {
+	var anchor Subnet
+	found := false
+	for _, s := range subnets {
+		if s.Type != "public" {
+			continue
+		}
+		if !found || s.CreatedAt.Before(anchor.CreatedAt) || (s.CreatedAt.Equal(anchor.CreatedAt) && s.ID < anchor.ID) {
+			anchor = s
+			found = true
+		}
+	}
+	return anchor, found
+}
+
 type VirtualMachine struct {
 	ID        string    `json:"id"`
 	ProjectID string    `json:"projectId"`

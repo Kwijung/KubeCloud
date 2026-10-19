@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/kloudia/kloudia/backend/internal/domain"
@@ -58,7 +59,10 @@ type recordingNetworkProvisioner struct {
 	deletedNetworks []domain.Network
 	createdSubnets  []domain.Subnet
 	deletedSubnets  []domain.Subnet
-	createErr       error
+	// public subnet lists passed alongside createdSubnets / deletedSubnets
+	createdPublic [][]domain.Subnet
+	deletedPublic [][]domain.Subnet
+	createErr     error
 }
 
 func (p *recordingNetworkProvisioner) CreateNetwork(_ context.Context, n domain.Network) error {
@@ -72,16 +76,26 @@ func (p *recordingNetworkProvisioner) DeleteNetwork(_ context.Context, n domain.
 	p.deletedNetworks = append(p.deletedNetworks, n)
 	return nil
 }
-func (p *recordingNetworkProvisioner) CreateSubnet(_ context.Context, _ string, s domain.Subnet) error {
+func (p *recordingNetworkProvisioner) CreateSubnet(_ context.Context, _ string, s domain.Subnet, publicSubnets []domain.Subnet) error {
 	if p.createErr != nil {
 		return p.createErr
 	}
 	p.createdSubnets = append(p.createdSubnets, s)
+	p.createdPublic = append(p.createdPublic, publicSubnets)
 	return nil
 }
-func (p *recordingNetworkProvisioner) DeleteSubnet(_ context.Context, _ string, s domain.Subnet) error {
+func (p *recordingNetworkProvisioner) DeleteSubnet(_ context.Context, _ string, s domain.Subnet, remainingPublicSubnets []domain.Subnet) error {
 	p.deletedSubnets = append(p.deletedSubnets, s)
+	p.deletedPublic = append(p.deletedPublic, remainingPublicSubnets)
 	return nil
+}
+
+func subnetIDs(subnets []domain.Subnet) []string {
+	ids := []string{}
+	for _, s := range subnets {
+		ids = append(ids, s.ID)
+	}
+	return ids
 }
 
 func TestCreateSubnetValidatesTypeAndProvisions(t *testing.T) {
@@ -212,5 +226,97 @@ func TestCreateSubnetRollsBackOnProvisionFailure(t *testing.T) {
 	}
 	if len(store.subnets) != 0 {
 		t.Fatalf("expected subnet record rolled back, got %d subnets", len(store.subnets))
+	}
+}
+
+func TestCreateSubnetPassesVPCPublicSubnets(t *testing.T) {
+	store := &fakeCatalogStore{networks: []domain.Network{{ID: "platform-app", ProjectID: "platform", Name: "app", OVNVPCName: "kloudia-vpc-platform-app", Status: "Ready"}}}
+	np := &recordingNetworkProvisioner{}
+	router := NewRouterWithDependencies(Dependencies{Version: "test", Store: store, NetworkProvisioner: np})
+
+	for _, body := range []string{
+		`{"name":"a","cidr":"10.0.0.0/24","type":"public"}`,
+		`{"name":"b","cidr":"10.0.1.0/24","type":"private"}`,
+		`{"name":"c","cidr":"10.0.2.0/24","type":"public"}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/platform/networks/platform-app/subnets", bytes.NewBufferString(body))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	want := [][]string{
+		{"platform-app-a"},
+		{},
+		{"platform-app-a", "platform-app-c"},
+	}
+	for i, w := range want {
+		got := subnetIDs(np.createdPublic[i])
+		if strings.Join(got, ",") != strings.Join(w, ",") {
+			t.Fatalf("subnet %d: expected public subnets %v, got %v", i, w, got)
+		}
+	}
+}
+
+func TestDeleteSubnetPassesRemainingPublicSubnets(t *testing.T) {
+	store := &fakeCatalogStore{
+		networks: []domain.Network{{ID: "net-a", ProjectID: "platform", Name: "net-a", OVNVPCName: "kloudia-vpc-platform-net-a", Status: "Ready"}},
+		subnets: []domain.Subnet{
+			{ID: "subnet-1", NetworkID: "net-a", ProjectID: "platform", Name: "web", CIDR: "10.0.0.0/24", Type: "public", Status: "Ready"},
+			{ID: "subnet-2", NetworkID: "net-a", ProjectID: "platform", Name: "db", CIDR: "10.0.1.0/24", Type: "private", Status: "Ready"},
+			{ID: "subnet-3", NetworkID: "net-a", ProjectID: "platform", Name: "api", CIDR: "10.0.2.0/24", Type: "public", Status: "Ready"},
+		},
+	}
+	np := &recordingNetworkProvisioner{}
+	router := NewRouterWithDependencies(Dependencies{Version: "test", Store: store, NetworkProvisioner: np})
+
+	for _, id := range []string{"subnet-3", "subnet-1"} {
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/projects/platform/networks/net-a/subnets/"+id, nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("delete %s: expected 204, got %d: %s", id, rec.Code, rec.Body.String())
+		}
+	}
+
+	if got := subnetIDs(np.deletedPublic[0]); strings.Join(got, ",") != "subnet-1" {
+		t.Fatalf("expected subnet-1 to remain public after deleting subnet-3, got %v", got)
+	}
+	if got := np.deletedPublic[1]; len(got) != 0 {
+		t.Fatalf("expected no public subnets left after deleting subnet-1, got %v", subnetIDs(got))
+	}
+}
+
+func TestDeleteGatewayAnchorSubnetReturns409(t *testing.T) {
+	store := &fakeCatalogStore{
+		networks:        []domain.Network{{ID: "net-a", ProjectID: "platform", Name: "net-a", OVNVPCName: "kloudia-vpc-platform-net-a", Status: "Ready"}},
+		subnets:         []domain.Subnet{{ID: "subnet-1", NetworkID: "net-a", ProjectID: "platform", Name: "web", CIDR: "10.0.0.0/24", Type: "public", Status: "Ready"}},
+		deleteSubnetErr: storepkg.ErrSubnetHostsNATGateway,
+	}
+	np := &recordingNetworkProvisioner{}
+	router := NewRouterWithDependencies(Dependencies{Version: "test", Store: store, NetworkProvisioner: np})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/projects/platform/networks/net-a/subnets/subnet-1", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Error.Code != "SUBNET_HOSTS_NAT_GATEWAY" {
+		t.Fatalf("expected SUBNET_HOSTS_NAT_GATEWAY, got %q", body.Error.Code)
+	}
+	if len(np.deletedSubnets) != 0 {
+		t.Fatalf("expected provisioner DeleteSubnet not to be called, got %d calls", len(np.deletedSubnets))
 	}
 }
