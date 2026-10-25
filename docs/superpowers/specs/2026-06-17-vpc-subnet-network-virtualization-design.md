@@ -12,7 +12,7 @@ Kloudia 포털에서 사용자가 **VPC와 서브넷을 직접 생성(생성 시
 
 ### 포함
 
-- VPC(가상 네트워크) 생성/조회/삭제
+- VPC(가상 네트워크) 생성/조회/삭제 (생성 시 VPC CIDR을 사용자가 지정, 서브넷은 그 안에서만 생성)
 - 서브넷 생성/조회/삭제 (생성 시 CIDR를 사용자가 지정)
 - 서브넷 타입 선택: **private / public**
   - private: 외부와 단절 (외부 통신 불가, 기본값)
@@ -38,6 +38,7 @@ Kloudia 포털에서 사용자가 **VPC와 서브넷을 직접 생성(생성 시
 | 연결 범위 | private는 내부 격리, public은 아웃바운드 egress(SNAT) 허용 |
 | 서브넷 타입 | private(기본) / public, 생성 시 선택 |
 | 격리 모델 | CIDR 중첩 허용 → 커스텀 VPC |
+| VPC CIDR | 사설 대역(RFC 1918) 안의 /16~/28, 클러스터 내부 대역과 겹치면 거부. 생성 후 변경 불가 |
 | VPC–프로젝트 관계 | 프로젝트 1:N VPC, VPC 1:N 서브넷 |
 | VM NIC | 서브넷 1개에 NIC 1개 |
 | IP 할당 | 서브넷 CIDR에서 자동 할당 |
@@ -88,6 +89,7 @@ CREATE TABLE networks (
   id            TEXT PRIMARY KEY,
   project_id    TEXT NOT NULL REFERENCES projects(id),
   name          TEXT NOT NULL,
+  cidr          TEXT,                   -- 사용자 지정 VPC CIDR (예: 10.10.0.0/16). VPC CIDR 도입 전 VPC는 NULL
   ovn_vpc_name  TEXT NOT NULL,          -- kube-ovn Vpc CR 이름 (예: kloudia-vpc-<id>)
   status        TEXT NOT NULL,          -- Provisioning / Ready / Failed
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -117,7 +119,7 @@ ALTER TABLE virtual_machines
 
 ```go
 type Network struct {
-    ID, ProjectID, Name, Status string
+    ID, ProjectID, Name, CIDR, Status string // CIDR: 도입 전 VPC는 빈 문자열
     CreatedAt time.Time
 }
 type Subnet struct {
@@ -134,7 +136,7 @@ type Subnet struct {
 
 ```
 GET    /api/v1/projects/{projectID}/networks
-POST   /api/v1/projects/{projectID}/networks                          {name}
+POST   /api/v1/projects/{projectID}/networks                          {name, cidr}
 DELETE /api/v1/projects/{projectID}/networks/{networkID}
 
 GET    /api/v1/projects/{projectID}/networks/{networkID}/subnets
@@ -147,7 +149,11 @@ DELETE /api/v1/projects/{projectID}/networks/{networkID}/subnets/{subnetID}
 
 ### 검증 규칙
 
-- `cidr`는 유효한 IPv4 CIDR이어야 한다 (`net/netip`로 파싱).
+- VPC `cidr`는 필수다. 사설 대역(10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) 안의 /16~/28이어야 하며(`NETWORK_CIDR_INVALID`), 호스트 비트는 지워 저장한다(10.10.5.7/16 → 10.10.0.0/16).
+- VPC `cidr`는 `KLOUDIA_RESERVED_CIDRS`의 대역과 겹칠 수 없다(`NETWORK_CIDR_RESERVED`). 기본값은 Cilium 파드(10.244.0.0/16)·서비스(10.96.0.0/12)·kube-ovn 기본/조인(10.16.0.0/16, 100.64.0.0/16) 대역이다. NAT 게이트웨이는 파드망(eth0)·서비스 경로와 VPC LAN을 함께 가지므로 겹치면 경로가 충돌한다. NAT 외부망으로 쓰는 노드망도 환경에 맞게 이 목록에 넣는다. 형식 검사(`NETWORK_CIDR_INVALID`)가 예약 대역 검사보다 먼저다.
+- Kube-OVN `Vpc` CR에는 CIDR 필드가 없다. VPC CIDR은 KubeCloud가 서브넷 생성 시 거는 제약이다.
+- 서브넷 `cidr`는 유효한 IPv4 CIDR이어야 한다 (`net/netip`로 파싱).
+- 서브넷 `cidr`는 VPC CIDR 안에 있어야 한다(`SUBNET_CIDR_OUTSIDE_VPC`). VPC CIDR 도입 전에 만든 VPC(CIDR 없음)의 서브넷은 이 검사를 하지 않는다.
 - 같은 VPC(`network_id`) 내 서브넷 CIDR는 서로 중첩될 수 없다.
 - 서로 다른 VPC 간 CIDR 중첩은 허용한다.
 - `gateway` 미지정 시 CIDR의 첫 사용 가능 IP를 기본값으로 한다. 지정 시 CIDR 범위 내여야 한다.
@@ -162,7 +168,10 @@ DELETE /api/v1/projects/{projectID}/networks/{networkID}/subnets/{subnetID}
 
 ### 에러 코드 (기존 플랫폼 에러 매핑 패턴 따름)
 
+- `NETWORK_CIDR_INVALID` (사설 대역 /16~/28이 아님)
+- `NETWORK_CIDR_RESERVED` (클러스터 내부 대역과 겹침)
 - `SUBNET_CIDR_INVALID`
+- `SUBNET_CIDR_OUTSIDE_VPC`
 - `SUBNET_CIDR_OVERLAP`
 - `SUBNET_TYPE_INVALID` (private/public 외 값)
 - `SUBNET_IN_USE`

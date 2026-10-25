@@ -53,9 +53,9 @@ curl -X POST http://localhost:8080/api/v1/projects/platform/vms \
 curl -X DELETE http://localhost:8080/api/v1/projects/platform/vms/platform-api-01
 curl http://localhost:8080/api/v1/projects/platform/networks
 curl -X POST http://localhost:8080/api/v1/projects/platform/networks \
-  -H 'Content-Type: application/json' -d '{"name":"app"}'
+  -H 'Content-Type: application/json' -d '{"name":"app","cidr":"10.20.0.0/16"}'
 curl -X POST http://localhost:8080/api/v1/projects/platform/networks/platform-app/subnets \
-  -H 'Content-Type: application/json' -d '{"name":"web","cidr":"10.0.0.0/24","type":"private"}'
+  -H 'Content-Type: application/json' -d '{"name":"web","cidr":"10.20.1.0/24","type":"private"}'
 curl http://localhost:8080/api/v1/projects/platform/networks/platform-app/subnets
 ```
 
@@ -72,7 +72,13 @@ KUBECONFIG=/home/cloudia/.kube/config
 KLOUDIA_KUBEVIRT_NAMESPACE=kloudia-vms
 KLOUDIA_KUBEVIRT_STORAGE_CLASS=test-delete
 KLOUDIA_OVN_EXTERNAL_NETWORK=ovn-vpc-external-network
+# Ranges a VPC CIDR must not overlap. The default covers the Cilium pod, service and kube-ovn
+# internal ranges; add the node network when NAT egress uses it.
+KLOUDIA_RESERVED_CIDRS=10.244.0.0/16,10.96.0.0/12,10.16.0.0/16,100.64.0.0/16
 ```
+
+A VPC takes a private CIDR from /16 to /28 (inside 10.0.0.0/8, 172.16.0.0/12 or 192.168.0.0/16)
+that must not overlap `KLOUDIA_RESERVED_CIDRS`; its subnets must fall inside it.
 
 Subnets can be `private` (isolated) or `public` (outbound SNAT egress via a kube-ovn VPC NAT gateway). Public subnets require kube-ovn's VPC NAT gateway feature and an external provider network configured at the infra layer.
 
