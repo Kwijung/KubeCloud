@@ -32,6 +32,7 @@ type Network struct {
 	ID         string    `json:"id"`
 	ProjectID  string    `json:"projectId"`
 	Name       string    `json:"name"`
+	CIDR       string    `json:"cidr"` // empty for VPCs created before VPC CIDRs existed
 	OVNVPCName string    `json:"-"`
 	Status     string    `json:"status"`
 	CreatedAt  time.Time `json:"createdAt"`

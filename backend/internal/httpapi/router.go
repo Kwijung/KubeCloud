@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/netip"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
@@ -23,7 +24,7 @@ type Store interface {
 	DeleteVirtualMachine(ctx context.Context, projectID string, vmID string) error
 	ListNetworks(ctx context.Context, projectID string) ([]domain.Network, error)
 	GetNetwork(ctx context.Context, projectID string, networkID string) (domain.Network, error)
-	CreateNetwork(ctx context.Context, projectID string, name string) (domain.Network, error)
+	CreateNetwork(ctx context.Context, projectID string, name string, cidr string) (domain.Network, error)
 	DeleteNetwork(ctx context.Context, projectID string, networkID string) (domain.Network, error)
 	ListSubnets(ctx context.Context, projectID string, networkID string) ([]domain.Subnet, error)
 	GetSubnet(ctx context.Context, projectID string, subnetID string) (domain.Subnet, error)
@@ -113,6 +114,20 @@ func (noopNetworkProvisioner) DeleteSubnet(context.Context, string, domain.Subne
 	return nil
 }
 
+// overlappingReservedCIDR returns the first reserved range that cidr overlaps.
+func overlappingReservedCIDR(cidr string, reserved []netip.Prefix) (string, bool) {
+	prefix, err := netip.ParsePrefix(cidr)
+	if err != nil {
+		return "", false
+	}
+	for _, r := range reserved {
+		if r.Overlaps(prefix) {
+			return r.String(), true
+		}
+	}
+	return "", false
+}
+
 // publicSubnetsOf lists the public subnets in subnet's VPC, leaving out excludeID. Private subnets do not
 // touch the NAT gateway, so they get nil without a lookup.
 func publicSubnetsOf(ctx context.Context, store Store, subnet domain.Subnet, excludeID string) ([]domain.Subnet, error) {
@@ -139,6 +154,8 @@ type Dependencies struct {
 	StatusReader       StatusReader
 	ConsoleStreamer    ConsoleStreamer
 	NetworkProvisioner NetworkProvisioner
+	// ReservedCIDRs are ranges a VPC CIDR must not overlap (cluster pod/service/kube-ovn ranges).
+	ReservedCIDRs []netip.Prefix
 }
 
 func NewRouter(version string, store Store) http.Handler {
@@ -421,16 +438,26 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 		projectID := chi.URLParam(r, "projectID")
 		var request struct {
 			Name string `json:"name"`
+			CIDR string `json:"cidr"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "request body must be valid JSON")
 			return
 		}
-		if request.Name == "" {
-			writeError(w, http.StatusBadRequest, "INVALID_NETWORK_REQUEST", "name is required")
+		if request.Name == "" || request.CIDR == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_NETWORK_REQUEST", "name and cidr are required")
 			return
 		}
-		network, err := store.CreateNetwork(r.Context(), projectID, request.Name)
+		cidr, err := storepkg.NormalizeNetworkCIDR(request.CIDR)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "NETWORK_CIDR_INVALID", "vpc cidr must be a private ipv4 range from /16 to /28")
+			return
+		}
+		if reserved, ok := overlappingReservedCIDR(cidr, deps.ReservedCIDRs); ok {
+			writeError(w, http.StatusBadRequest, "NETWORK_CIDR_RESERVED", "vpc cidr overlaps the cluster range "+reserved)
+			return
+		}
+		network, err := store.CreateNetwork(r.Context(), projectID, request.Name, cidr)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "NETWORK_CREATE_FAILED", "failed to create network")
 			return
@@ -522,6 +549,8 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 				writeError(w, http.StatusNotFound, "NETWORK_NOT_FOUND", "network was not found")
 			case errors.Is(err, storepkg.ErrSubnetCIDRInvalid):
 				writeError(w, http.StatusBadRequest, "SUBNET_CIDR_INVALID", "subnet cidr is invalid")
+			case errors.Is(err, storepkg.ErrSubnetCIDROutsideNetwork):
+				writeError(w, http.StatusBadRequest, "SUBNET_CIDR_OUTSIDE_VPC", "subnet cidr must be inside the vpc cidr")
 			case errors.Is(err, storepkg.ErrSubnetCIDROverlap):
 				writeError(w, http.StatusConflict, "SUBNET_CIDR_OVERLAP", "subnet cidr overlaps an existing subnet in this vpc")
 			default:

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -18,7 +19,7 @@ func TestCreateNetworkPersistsAndProvisions(t *testing.T) {
 	store := &fakeCatalogStore{}
 	np := &recordingNetworkProvisioner{}
 	router := NewRouterWithDependencies(Dependencies{Version: "test", Store: store, NetworkProvisioner: np})
-	body := bytes.NewBufferString(`{"name":"app"}`)
+	body := bytes.NewBufferString(`{"name":"app","cidr":"10.0.0.0/16"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/platform/networks", body)
 	rec := httptest.NewRecorder()
 
@@ -195,7 +196,7 @@ func TestCreateNetworkRollsBackOnProvisionFailure(t *testing.T) {
 	store := &fakeCatalogStore{}
 	np := &recordingNetworkProvisioner{createErr: errors.New("provisioner down")}
 	router := NewRouterWithDependencies(Dependencies{Version: "test", Store: store, NetworkProvisioner: np})
-	body := bytes.NewBufferString(`{"name":"app"}`)
+	body := bytes.NewBufferString(`{"name":"app","cidr":"10.0.0.0/16"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/platform/networks", body)
 	rec := httptest.NewRecorder()
 
@@ -318,5 +319,86 @@ func TestDeleteGatewayAnchorSubnetReturns409(t *testing.T) {
 	}
 	if len(np.deletedSubnets) != 0 {
 		t.Fatalf("expected provisioner DeleteSubnet not to be called, got %d calls", len(np.deletedSubnets))
+	}
+}
+
+func postNetwork(t *testing.T, router http.Handler, body string) (int, string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/platform/networks", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	var resp struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	return rec.Code, resp.Error.Code
+}
+
+func TestCreateNetworkRequiresCIDRAndStoresIt(t *testing.T) {
+	store := &fakeCatalogStore{}
+	router := NewRouterWithDependencies(Dependencies{Version: "test", Store: store})
+
+	if code, errCode := postNetwork(t, router, `{"name":"app"}`); code != http.StatusBadRequest || errCode != "INVALID_NETWORK_REQUEST" {
+		t.Fatalf("expected 400 INVALID_NETWORK_REQUEST without cidr, got %d %s", code, errCode)
+	}
+	if code, _ := postNetwork(t, router, `{"name":"app","cidr":"10.20.0.0/16"}`); code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", code)
+	}
+	if code, _ := postNetwork(t, router, `{"name":"app2","cidr":"10.21.9.0/16"}`); code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", code)
+	}
+	if store.networks[0].CIDR != "10.20.0.0/16" || store.networks[1].CIDR != "10.21.0.0/16" {
+		t.Fatalf("expected masked cidrs passed to store, got %q %q", store.networks[0].CIDR, store.networks[1].CIDR)
+	}
+}
+
+func TestCreateNetworkRejectsReservedCIDR(t *testing.T) {
+	store := &fakeCatalogStore{}
+	np := &recordingNetworkProvisioner{}
+	router := NewRouterWithDependencies(Dependencies{
+		Version: "test", Store: store, NetworkProvisioner: np,
+		ReservedCIDRs: []netip.Prefix{netip.MustParsePrefix("10.244.0.0/16"), netip.MustParsePrefix("10.96.0.0/12")},
+	})
+
+	code, errCode := postNetwork(t, router, `{"name":"app","cidr":"10.100.0.0/16"}`)
+
+	if code != http.StatusBadRequest || errCode != "NETWORK_CIDR_RESERVED" {
+		t.Fatalf("expected 400 NETWORK_CIDR_RESERVED for a range inside 10.96.0.0/12, got %d %s", code, errCode)
+	}
+	if len(store.networks) != 0 || len(np.createdNetworks) != 0 {
+		t.Fatal("reserved cidr must not be stored or provisioned")
+	}
+}
+
+func TestCreateNetworkInvalidCIDRReturns400(t *testing.T) {
+	router := NewRouterWithDependencies(Dependencies{
+		Version: "test", Store: &fakeCatalogStore{},
+		ReservedCIDRs: []netip.Prefix{netip.MustParsePrefix("10.244.0.0/16")},
+	})
+
+	// 10.0.0.0/8 also overlaps a reserved range; the size error must win so the user learns the real problem.
+	for _, cidr := range []string{"8.8.8.0/24", "10.0.0.0/8", "nope"} {
+		code, errCode := postNetwork(t, router, `{"name":"app","cidr":"`+cidr+`"}`)
+		if code != http.StatusBadRequest || errCode != "NETWORK_CIDR_INVALID" {
+			t.Fatalf("%s: expected 400 NETWORK_CIDR_INVALID, got %d %s", cidr, code, errCode)
+		}
+	}
+}
+
+func TestCreateSubnetOutsideVPCReturns400(t *testing.T) {
+	store := &fakeCatalogStore{
+		networks:        []domain.Network{{ID: "platform-app", ProjectID: "platform", Name: "app", CIDR: "10.0.0.0/16", OVNVPCName: "kloudia-vpc-platform-app", Status: "Ready"}},
+		createSubnetErr: storepkg.ErrSubnetCIDROutsideNetwork,
+	}
+	router := NewRouterWithDependencies(Dependencies{Version: "test", Store: store})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/platform/networks/platform-app/subnets", bytes.NewBufferString(`{"name":"web","cidr":"10.1.0.0/24"}`))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "SUBNET_CIDR_OUTSIDE_VPC") {
+		t.Fatalf("expected 400 SUBNET_CIDR_OUTSIDE_VPC, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

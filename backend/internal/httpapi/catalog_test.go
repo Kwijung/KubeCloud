@@ -160,8 +160,8 @@ func (s *fakeCatalogStore) GetNetwork(_ context.Context, projectID string, netwo
 	return domain.Network{}, storepkg.ErrNotFound
 }
 
-func (s *fakeCatalogStore) CreateNetwork(_ context.Context, projectID string, name string) (domain.Network, error) {
-	n := domain.Network{ID: projectID + "-" + name, ProjectID: projectID, Name: name, OVNVPCName: "kloudia-vpc-" + projectID + "-" + name, Status: "Ready"}
+func (s *fakeCatalogStore) CreateNetwork(_ context.Context, projectID string, name string, cidr string) (domain.Network, error) {
+	n := domain.Network{ID: projectID + "-" + name, ProjectID: projectID, Name: name, CIDR: cidr, OVNVPCName: "kloudia-vpc-" + projectID + "-" + name, Status: "Ready"}
 	s.networks = append(s.networks, n)
 	return n, nil
 }

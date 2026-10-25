@@ -182,7 +182,7 @@ func TestPostgresRejectsDeletingNATGatewayAnchorWhileOtherPublicSubnetsRemain(t 
 	if err := db.ApplySchema(ctx); err != nil {
 		t.Fatalf("apply schema: %v", err)
 	}
-	network, err := db.CreateNetwork(ctx, "platform", "natgw-anchor-"+time.Now().Format("150405.000000"))
+	network, err := db.CreateNetwork(ctx, "platform", "natgw-anchor-"+time.Now().Format("150405.000000"), "10.0.0.0/16")
 	if err != nil {
 		t.Fatalf("create network: %v", err)
 	}
@@ -203,6 +203,52 @@ func TestPostgresRejectsDeletingNATGatewayAnchorWhileOtherPublicSubnetsRemain(t 
 	}
 	if _, err := db.DeleteSubnet(ctx, "platform", anchor.ID); err != nil {
 		t.Fatalf("delete last public subnet: %v", err)
+	}
+	if _, err := db.DeleteNetwork(ctx, "platform", network.ID); err != nil {
+		t.Fatalf("delete network: %v", err)
+	}
+}
+
+func TestPostgresKeepsSubnetsInsideVPCCIDR(t *testing.T) {
+	databaseURL := os.Getenv("KLOUDIA_STORE_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("KLOUDIA_STORE_TEST_DATABASE_URL is required for store integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	db, err := NewPostgres(databaseURL)
+	if err != nil {
+		t.Fatalf("new postgres: %v", err)
+	}
+	defer db.Close()
+	if err := db.ApplySchema(ctx); err != nil {
+		t.Fatalf("apply schema: %v", err)
+	}
+
+	if _, err := db.CreateNetwork(ctx, "platform", "public-range", "8.8.0.0/16"); !errors.Is(err, ErrNetworkCIDRInvalid) {
+		t.Fatalf("expected ErrNetworkCIDRInvalid for a public range, got %v", err)
+	}
+	network, err := db.CreateNetwork(ctx, "platform", "vpc-cidr-"+time.Now().Format("150405.000000"), "10.30.7.0/16")
+	if err != nil {
+		t.Fatalf("create network: %v", err)
+	}
+	if network.CIDR != "10.30.0.0/16" {
+		t.Fatalf("expected masked vpc cidr 10.30.0.0/16, got %q", network.CIDR)
+	}
+	got, err := db.GetNetwork(ctx, "platform", network.ID)
+	if err != nil || got.CIDR != "10.30.0.0/16" {
+		t.Fatalf("expected stored vpc cidr, got %q (err %v)", got.CIDR, err)
+	}
+
+	if _, err := db.CreateSubnet(ctx, "platform", network.ID, "outside", "10.31.0.0/24", "private", ""); !errors.Is(err, ErrSubnetCIDROutsideNetwork) {
+		t.Fatalf("expected ErrSubnetCIDROutsideNetwork, got %v", err)
+	}
+	inside, err := db.CreateSubnet(ctx, "platform", network.ID, "inside", "10.30.1.0/24", "private", "")
+	if err != nil {
+		t.Fatalf("create subnet inside vpc: %v", err)
+	}
+	if _, err := db.DeleteSubnet(ctx, "platform", inside.ID); err != nil {
+		t.Fatalf("delete subnet: %v", err)
 	}
 	if _, err := db.DeleteNetwork(ctx, "platform", network.ID); err != nil {
 		t.Fatalf("delete network: %v", err)

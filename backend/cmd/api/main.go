@@ -25,7 +25,11 @@ func main() {
 		log.Fatalf("database schema setup failed: %v", err)
 	}
 
-	handler := httpapi.NewRouter(cfg.Version, db)
+	reservedCIDRs, err := cfg.ReservedPrefixes()
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	handler := httpapi.NewRouterWithDependencies(httpapi.Dependencies{Version: cfg.Version, Store: db, ReservedCIDRs: reservedCIDRs})
 	if cfg.KubeVirtEnabled {
 		applier, err := kubevirt.NewDynamicApplier(cfg.KubeconfigPath)
 		if err != nil {
@@ -46,6 +50,7 @@ func main() {
 			Provisioner:     provisioner,
 			StatusReader:    statusReader,
 			ConsoleStreamer: consoleStreamer,
+			ReservedCIDRs:   reservedCIDRs,
 		}
 		if cfg.NetworkProvisioningEnabled {
 			deps.NetworkProvisioner = kubevirt.NewNetworkProvisioner(cfg.KubeVirtNamespace, cfg.OVNExternalNetwork, applier)

@@ -112,6 +112,10 @@ CREATE TABLE IF NOT EXISTS subnets (
 ALTER TABLE virtual_machines
   ADD COLUMN IF NOT EXISTS subnet_id text REFERENCES subnets(id);
 
+-- NULL for VPCs created before VPC CIDRs existed; their subnets are not range-checked.
+ALTER TABLE networks
+  ADD COLUMN IF NOT EXISTS cidr text;
+
 INSERT INTO projects (id, name, description)
 VALUES
   ('platform', 'Platform', 'Shared platform engineering workspace'),
