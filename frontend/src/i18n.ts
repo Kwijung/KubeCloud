@@ -109,6 +109,16 @@ export const messages = {
     cloudInitSSHPublicKey: "SSH 공개키 (선택)",
     networkActionFailed: "네트워크 요청 실패",
     subnetActionFailed: "서브넷 요청 실패",
+    networkCidrLabel: "VPC CIDR (예: 10.10.0.0/16)",
+    subnetCidrWithin: "CIDR ({cidr} 안)",
+    errorNetworkCidrInvalid: "VPC CIDR은 사설 대역(10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) 안의 /16~/28이어야 합니다",
+    errorNetworkCidrReserved: "VPC CIDR이 클러스터 내부 대역과 겹칩니다",
+    errorNetworkInUse: "서브넷이 남아 있는 VPC는 삭제할 수 없습니다",
+    errorSubnetCidrInvalid: "올바른 IPv4 CIDR이 아닙니다",
+    errorSubnetCidrOverlap: "같은 VPC의 다른 서브넷과 CIDR이 겹칩니다",
+    errorSubnetCidrOutsideVpc: "서브넷 CIDR이 VPC CIDR 밖에 있습니다",
+    errorSubnetInUse: "VM이 연결된 서브넷은 삭제할 수 없습니다",
+    errorSubnetHostsNatGateway: "이 서브넷에 VPC NAT 게이트웨이가 있습니다. 다른 public 서브넷을 먼저 삭제하세요",
   },
   en: {
     privateCloud: "Private Cloud",
@@ -213,6 +223,16 @@ export const messages = {
     cloudInitSSHPublicKey: "SSH public key (optional)",
     networkActionFailed: "Network request failed",
     subnetActionFailed: "Subnet request failed",
+    networkCidrLabel: "VPC CIDR (e.g. 10.10.0.0/16)",
+    subnetCidrWithin: "CIDR (within {cidr})",
+    errorNetworkCidrInvalid: "VPC CIDR must be a /16 to /28 inside a private range (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)",
+    errorNetworkCidrReserved: "VPC CIDR overlaps a cluster-internal range",
+    errorNetworkInUse: "A VPC with subnets cannot be deleted",
+    errorSubnetCidrInvalid: "Not a valid IPv4 CIDR",
+    errorSubnetCidrOverlap: "CIDR overlaps another subnet in this VPC",
+    errorSubnetCidrOutsideVpc: "Subnet CIDR is outside the VPC CIDR",
+    errorSubnetInUse: "A subnet with VMs attached cannot be deleted",
+    errorSubnetHostsNatGateway: "This subnet hosts the VPC NAT gateway. Delete the other public subnets first",
   },
 } as const;
 
@@ -223,6 +243,32 @@ export function getInitialLanguage(): Language {
 
 export function saveLanguage(language: Language) {
   window.localStorage.setItem("kloudia-language", language);
+}
+
+// translateApiError explains a known backend error code, or falls back to a generic message.
+export function translateApiError(error: unknown, language: Language, fallback: string): string {
+  const t = messages[language];
+  const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
+  switch (code) {
+    case "NETWORK_CIDR_INVALID":
+      return t.errorNetworkCidrInvalid;
+    case "NETWORK_CIDR_RESERVED":
+      return t.errorNetworkCidrReserved;
+    case "NETWORK_IN_USE":
+      return t.errorNetworkInUse;
+    case "SUBNET_CIDR_INVALID":
+      return t.errorSubnetCidrInvalid;
+    case "SUBNET_CIDR_OVERLAP":
+      return t.errorSubnetCidrOverlap;
+    case "SUBNET_CIDR_OUTSIDE_VPC":
+      return t.errorSubnetCidrOutsideVpc;
+    case "SUBNET_IN_USE":
+      return t.errorSubnetInUse;
+    case "SUBNET_HOSTS_NAT_GATEWAY":
+      return t.errorSubnetHostsNatGateway;
+    default:
+      return fallback;
+  }
 }
 
 export function translateStatus(status: string, language: Language): string {

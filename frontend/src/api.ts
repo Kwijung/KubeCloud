@@ -24,6 +24,7 @@ export type Network = {
   id: string;
   projectId: string;
   name: string;
+  cidr: string; // empty for VPCs created before VPC CIDRs existed
   status: string;
   createdAt: string;
 };
@@ -131,14 +132,14 @@ export async function fetchNetworks(projectId: string): Promise<Network[]> {
   return response.data;
 }
 
-export async function createNetwork(projectId: string, name: string): Promise<Network> {
+export async function createNetwork(projectId: string, name: string, cidr: string): Promise<Network> {
   const response = await fetch(`${apiBaseUrl}/api/v1/projects/${projectId}/networks`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, cidr }),
   });
   if (!response.ok) {
-    throw new Error(`network create failed: ${response.status}`);
+    throw await apiError(response, "network create failed");
   }
   const body = (await response.json()) as { data: Network };
   return body.data;
@@ -149,7 +150,7 @@ export async function deleteNetwork(projectId: string, networkId: string): Promi
     method: "DELETE",
   });
   if (!response.ok) {
-    throw new Error(`network delete failed: ${response.status}`);
+    throw await apiError(response, "network delete failed");
   }
 }
 
@@ -174,7 +175,7 @@ export async function createSubnet(
     },
   );
   if (!response.ok) {
-    throw new Error(`subnet create failed: ${response.status}`);
+    throw await apiError(response, "subnet create failed");
   }
   const body = (await response.json()) as { data: Subnet };
   return body.data;
@@ -186,7 +187,7 @@ export async function deleteSubnet(projectId: string, networkId: string, subnetI
     { method: "DELETE" },
   );
   if (!response.ok) {
-    throw new Error(`subnet delete failed: ${response.status}`);
+    throw await apiError(response, "subnet delete failed");
   }
 }
 
@@ -262,6 +263,25 @@ async function postAction(path: string): Promise<void> {
   const response = await fetch(`${apiBaseUrl}${path}`, { method: "POST" });
   if (!response.ok) {
     throw new Error(`api action failed: ${response.status}`);
+  }
+}
+
+// ApiError carries the backend's error code (e.g. SUBNET_CIDR_OVERLAP) so the UI can explain the failure.
+export class ApiError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+async function apiError(response: Response, action: string): Promise<ApiError> {
+  try {
+    const body = (await response.json()) as { error?: { code?: string; message?: string } };
+    return new ApiError(body.error?.code ?? "", body.error?.message ?? `${action}: ${response.status}`);
+  } catch {
+    return new ApiError("", `${action}: ${response.status}`);
   }
 }
 

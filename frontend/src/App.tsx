@@ -22,7 +22,7 @@ import {
   stopVirtualMachine,
   virtualMachineConsoleStreamURL,
 } from "./api";
-import { getInitialLanguage, languageOptions, messages, saveLanguage, translateStatus } from "./i18n";
+import { getInitialLanguage, languageOptions, messages, saveLanguage, translateApiError, translateStatus } from "./i18n";
 import type { Language } from "./i18n";
 
 const navItems = [
@@ -50,6 +50,7 @@ export function App() {
   const consoleTerminalRef = useRef<HTMLDivElement | null>(null);
   const [selectedNetworkId, setSelectedNetworkId] = useState("");
   const [newNetworkName, setNewNetworkName] = useState("");
+  const [newNetworkCidr, setNewNetworkCidr] = useState("");
   const [newSubnetName, setNewSubnetName] = useState("");
   const [newSubnetCidr, setNewSubnetCidr] = useState("");
   const [newSubnetType, setNewSubnetType] = useState<"private" | "public">("private");
@@ -144,9 +145,10 @@ export function App() {
     enabled: selectedProjectId !== "" && selectedNetworkId !== "",
   });
   const createNetworkMutation = useMutation({
-    mutationFn: () => createNetwork(selectedProjectId, newNetworkName.trim()),
+    mutationFn: () => createNetwork(selectedProjectId, newNetworkName.trim(), newNetworkCidr.trim()),
     onSuccess: () => {
       setNewNetworkName("");
+      setNewNetworkCidr("");
       void queryClient.invalidateQueries({ queryKey: ["networks", selectedProjectId] });
     },
   });
@@ -232,7 +234,11 @@ export function App() {
   const vmCount = virtualMachines.data?.length ?? 0;
   const imageCount = images.data?.length ?? 0;
   const canCreateVM = selectedProjectId !== "" && vmName.trim() !== "" && selectedImageId !== "" && selectedFlavorId !== "";
-  const canCreateNetwork = selectedProjectId !== "" && newNetworkName.trim() !== "";
+  const canCreateNetwork = selectedProjectId !== "" && newNetworkName.trim() !== "" && newNetworkCidr.trim() !== "";
+  const selectedNetworkCidr = (networks.data ?? []).find((network) => network.id === selectedNetworkId)?.cidr ?? "";
+  const subnetCidrPlaceholder = selectedNetworkCidr
+    ? t.subnetCidrWithin.replace("{cidr}", selectedNetworkCidr)
+    : t.subnetCidrLabel;
   const canCreateSubnet = selectedProjectId !== "" && selectedNetworkId !== "" && newSubnetName.trim() !== "" && newSubnetCidr.trim() !== "";
   const healthStatus = health.data?.status ?? (health.isLoading ? "checking" : "offline");
 
@@ -656,13 +662,27 @@ export function App() {
                 value={newNetworkName}
                 onChange={(event) => setNewNetworkName(event.target.value)}
               />
+              <input
+                aria-label={t.networkCidrLabel}
+                placeholder={t.networkCidrLabel}
+                value={newNetworkCidr}
+                onChange={(event) => setNewNetworkCidr(event.target.value)}
+              />
               <button className="primary-action" disabled={!canCreateNetwork || createNetworkMutation.isPending}>
                 <Play size={16} />
                 {createNetworkMutation.isPending ? t.creating : t.networkCreate}
               </button>
             </form>
-            {createNetworkMutation.isError && <div className="error-row">{t.networkActionFailed}</div>}
-            {deleteNetworkMutation.isError && <div className="error-row">{t.networkActionFailed}</div>}
+            {createNetworkMutation.isError && (
+              <div className="error-row">
+                {translateApiError(createNetworkMutation.error, language, t.networkActionFailed)}
+              </div>
+            )}
+            {deleteNetworkMutation.isError && (
+              <div className="error-row">
+                {translateApiError(deleteNetworkMutation.error, language, t.networkActionFailed)}
+              </div>
+            )}
             <div className="compact-list">
               {(networks.data ?? []).map((network) => (
                 <div
@@ -675,6 +695,7 @@ export function App() {
                     onClick={() => setSelectedNetworkId(network.id)}
                   >
                     <strong>{network.name}</strong>
+                    {network.cidr && <span>{network.cidr}</span>}
                     <span className={`state state-${network.status.toLowerCase()}`}>{network.status}</span>
                   </button>
                   <button
@@ -712,7 +733,7 @@ export function App() {
                   />
                   <input
                     aria-label={t.subnetCidrLabel}
-                    placeholder={t.subnetCidrLabel}
+                    placeholder={subnetCidrPlaceholder}
                     value={newSubnetCidr}
                     onChange={(event) => setNewSubnetCidr(event.target.value)}
                   />
@@ -729,8 +750,16 @@ export function App() {
                     {createSubnetMutation.isPending ? t.creating : t.subnetCreate}
                   </button>
                 </form>
-                {createSubnetMutation.isError && <div className="error-row">{t.subnetActionFailed}</div>}
-                {deleteSubnetMutation.isError && <div className="error-row">{t.subnetActionFailed}</div>}
+                {createSubnetMutation.isError && (
+                  <div className="error-row">
+                    {translateApiError(createSubnetMutation.error, language, t.subnetActionFailed)}
+                  </div>
+                )}
+                {deleteSubnetMutation.isError && (
+                  <div className="error-row">
+                    {translateApiError(deleteSubnetMutation.error, language, t.subnetActionFailed)}
+                  </div>
+                )}
                 <div className="table">
                   <div className="table-row table-head">
                     <span>{t.subnetNameLabel}</span>
