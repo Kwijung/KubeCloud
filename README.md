@@ -45,6 +45,16 @@ Catalog APIs:
 curl http://localhost:8080/api/v1/projects
 curl http://localhost:8080/api/v1/flavors
 curl http://localhost:8080/api/v1/projects/platform/images
+curl -X POST http://localhost:8080/api/v1/projects/platform/images \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Ubuntu 24.04","osType":"linux","sourceUrl":"https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"}'
+curl -X DELETE http://localhost:8080/api/v1/projects/platform/images/platform-ubuntu-24-04
+# Public images: every project can use them (no auth yet; admin-only once accounts land)
+curl http://localhost:8080/api/v1/admin/images
+curl -X POST http://localhost:8080/api/v1/admin/images \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Debian 12","osType":"linux","sourceUrl":"https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"}'
+curl -X DELETE http://localhost:8080/api/v1/admin/images/public-debian-12
 curl http://localhost:8080/api/v1/projects/platform/vms
 curl http://localhost:8080/api/v1/projects/platform/vms/platform-api-01
 curl -X POST http://localhost:8080/api/v1/projects/platform/vms \
@@ -58,6 +68,10 @@ curl -X POST http://localhost:8080/api/v1/projects/platform/networks/platform-ap
   -H 'Content-Type: application/json' -d '{"name":"web","cidr":"10.20.1.0/24","type":"private"}'
 curl http://localhost:8080/api/v1/projects/platform/networks/platform-app/subnets
 ```
+
+An image is a name plus an http(s) URL and is `Ready` as soon as it is registered: CDI downloads the URL
+into each VM's root disk when the VM is created, so the flavor's root disk must be larger than the image's
+virtual size. An image that VMs still use cannot be deleted (409 `IMAGE_IN_USE`).
 
 The VM create endpoint persists a VM record and prepares the KubeVirt/CDI resource
 model. Set `KLOUDIA_KUBEVIRT_ENABLED=true` to apply generated `DataVolume` and

@@ -26,6 +26,22 @@ type Image struct {
 	SourceURL string    `json:"sourceUrl"`
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"createdAt"`
+	// VirtualSizeBytes is the disk size the image expands to; nil when it could not be read (non-qcow2).
+	VirtualSizeBytes *int64 `json:"virtualSizeBytes,omitempty"`
+	// MinRootDiskBytes is the smallest flavor root disk that holds the image; nil when the size is unknown.
+	MinRootDiskBytes *int64 `json:"minRootDiskBytes,omitempty"`
+	// Scope is "public" (registered by an admin, readable by every project; ProjectID is empty) or "project".
+	Scope string `json:"scope"`
+	// VMCount is the number of VMs using the image across all projects; only the admin image list sets it.
+	VMCount *int `json:"vmCount,omitempty"`
+}
+
+// CreateImageInput registers a cloud image by URL. CDI downloads it when a VM using the image is created.
+type CreateImageInput struct {
+	Name             string
+	OSType           string
+	SourceURL        string
+	VirtualSizeBytes *int64
 }
 
 type Network struct {
@@ -117,6 +133,9 @@ type VirtualMachineDetail struct {
 	PVCCapacity      string         `json:"pvcCapacity"`
 	ConsoleAvailable bool           `json:"consoleAvailable"`
 	Events           []RuntimeEvent `json:"events"`
+	// Subnet and Network describe where the VM is attached; both are nil for a VM on the pod network.
+	Subnet  *Subnet  `json:"subnet,omitempty"`
+	Network *Network `json:"network,omitempty"`
 }
 
 type RuntimeEvent struct {

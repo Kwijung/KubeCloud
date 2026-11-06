@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/netip"
 
@@ -18,6 +19,11 @@ type Store interface {
 	ListProjects(ctx context.Context) ([]domain.Project, error)
 	ListFlavors(ctx context.Context) ([]domain.Flavor, error)
 	ListImages(ctx context.Context, projectID string) ([]domain.Image, error)
+	CreateImage(ctx context.Context, projectID string, input domain.CreateImageInput) (domain.Image, error)
+	DeleteImage(ctx context.Context, projectID string, imageID string) error
+	ListPublicImages(ctx context.Context) ([]domain.Image, error)
+	CreatePublicImage(ctx context.Context, input domain.CreateImageInput) (domain.Image, error)
+	DeletePublicImage(ctx context.Context, imageID string) error
 	ListVirtualMachines(ctx context.Context, projectID string) ([]domain.VirtualMachine, error)
 	CreateVirtualMachine(ctx context.Context, projectID string, input domain.CreateVirtualMachineInput) (domain.VirtualMachineProvisioningPlan, error)
 	GetVirtualMachine(ctx context.Context, projectID string, vmID string) (domain.VirtualMachine, error)
@@ -30,6 +36,11 @@ type Store interface {
 	GetSubnet(ctx context.Context, projectID string, subnetID string) (domain.Subnet, error)
 	CreateSubnet(ctx context.Context, projectID string, networkID string, name string, cidr string, subnetType string, gateway string) (domain.Subnet, error)
 	DeleteSubnet(ctx context.Context, projectID string, subnetID string) (domain.Subnet, error)
+}
+
+// ImageProber reads an image's virtual disk size from its URL.
+type ImageProber interface {
+	VirtualSize(ctx context.Context, url string) (int64, error)
 }
 
 type Provisioner interface {
@@ -156,6 +167,8 @@ type Dependencies struct {
 	NetworkProvisioner NetworkProvisioner
 	// ReservedCIDRs are ranges a VPC CIDR must not overlap (cluster pod/service/kube-ovn ranges).
 	ReservedCIDRs []netip.Prefix
+	// ImageProber reads image sizes at registration; nil skips it.
+	ImageProber ImageProber
 }
 
 func NewRouter(version string, store Store) http.Handler {
@@ -265,6 +278,40 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 		writeJSON(w, http.StatusOK, map[string]any{"data": images})
 	})
 
+	router.Post("/api/v1/projects/{projectID}/images", func(w http.ResponseWriter, r *http.Request) {
+		projectID := chi.URLParam(r, "projectID")
+		createImage(w, r, deps.ImageProber, func(ctx context.Context, input domain.CreateImageInput) (domain.Image, error) {
+			return store.CreateImage(ctx, projectID, input)
+		})
+	})
+
+	// A public image is not deletable here: DeleteImage only matches the project's own images.
+	router.Delete("/api/v1/projects/{projectID}/images/{imageID}", func(w http.ResponseWriter, r *http.Request) {
+		imageID := chi.URLParam(r, "imageID")
+		writeImageDeleteResult(w, imageID, store.DeleteImage(r.Context(), chi.URLParam(r, "projectID"), imageID))
+	})
+
+	// Public images. These admin routes are unauthenticated until accounts and roles land; then only the
+	// admin role may call them.
+	router.Get("/api/v1/admin/images", func(w http.ResponseWriter, r *http.Request) {
+		images, err := store.ListPublicImages(r.Context())
+		if err != nil {
+			log.Printf("list public images: %v", err)
+			writeError(w, http.StatusInternalServerError, "IMAGES_UNAVAILABLE", "failed to list public images")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": images})
+	})
+
+	router.Post("/api/v1/admin/images", func(w http.ResponseWriter, r *http.Request) {
+		createImage(w, r, deps.ImageProber, store.CreatePublicImage)
+	})
+
+	router.Delete("/api/v1/admin/images/{imageID}", func(w http.ResponseWriter, r *http.Request) {
+		imageID := chi.URLParam(r, "imageID")
+		writeImageDeleteResult(w, imageID, store.DeletePublicImage(r.Context(), imageID))
+	})
+
 	router.Get("/api/v1/projects/{projectID}/vms", func(w http.ResponseWriter, r *http.Request) {
 		vms, err := store.ListVirtualMachines(r.Context(), chi.URLParam(r, "projectID"))
 		if err != nil {
@@ -291,6 +338,7 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			writeError(w, http.StatusInternalServerError, "VM_DETAIL_UNAVAILABLE", "failed to read virtual machine detail")
 			return
 		}
+		attachVirtualMachineNetwork(r.Context(), store, vm, &detail)
 		writeJSON(w, http.StatusOK, map[string]any{"data": detail})
 	})
 
@@ -318,15 +366,26 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			CloudInit: request.CloudInit,
 		})
 		if err != nil {
-			if errors.Is(err, storepkg.ErrNotFound) {
+			switch {
+			case errors.Is(err, storepkg.ErrNotFound):
 				writeError(w, http.StatusBadRequest, "INVALID_SUBNET", "subnetId not found in this project")
-				return
+			case errors.Is(err, storepkg.ErrImageNotFound):
+				writeError(w, http.StatusBadRequest, "INVALID_IMAGE", "imageId not found in this project")
+			case errors.Is(err, storepkg.ErrImageNotReady):
+				writeError(w, http.StatusConflict, "IMAGE_NOT_READY", "image has not finished importing")
+			case errors.Is(err, storepkg.ErrFlavorNotFound):
+				writeError(w, http.StatusBadRequest, "INVALID_FLAVOR", "flavorId not found or disabled")
+			case errors.Is(err, storepkg.ErrFlavorDiskTooSmall):
+				writeError(w, http.StatusBadRequest, "FLAVOR_DISK_TOO_SMALL", "the flavor's root disk is smaller than the image; pick a larger flavor")
+			default:
+				log.Printf("create virtual machine %q in project %s: %v", request.Name, chi.URLParam(r, "projectID"), err)
+				writeError(w, http.StatusInternalServerError, "VM_CREATE_FAILED", "failed to create virtual machine")
 			}
-			writeError(w, http.StatusInternalServerError, "VM_CREATE_FAILED", "failed to create virtual machine")
 			return
 		}
 		if provisioner != nil {
 			if err := provisioner.CreateVirtualMachine(r.Context(), plan); err != nil {
+				log.Printf("provision virtual machine %s: %v", plan.VirtualMachine.ID, err)
 				writeError(w, http.StatusBadGateway, "VM_PROVISION_FAILED", "failed to provision virtual machine")
 				return
 			}
@@ -632,6 +691,26 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+// attachVirtualMachineNetwork fills in the subnet and VPC a VM is attached to. A lookup failure leaves them
+// empty instead of failing the detail view, since the runtime detail is still useful on its own.
+func attachVirtualMachineNetwork(ctx context.Context, store Store, vm domain.VirtualMachine, detail *domain.VirtualMachineDetail) {
+	if vm.SubnetID == "" {
+		return
+	}
+	subnet, err := store.GetSubnet(ctx, vm.ProjectID, vm.SubnetID)
+	if err != nil {
+		log.Printf("vm %s: read subnet %s: %v", vm.ID, vm.SubnetID, err)
+		return
+	}
+	detail.Subnet = &subnet
+	network, err := store.GetNetwork(ctx, vm.ProjectID, subnet.NetworkID)
+	if err != nil {
+		log.Printf("vm %s: read network %s: %v", vm.ID, subnet.NetworkID, err)
+		return
+	}
+	detail.Network = &network
 }
 
 func writeError(w http.ResponseWriter, status int, code string, message string) {

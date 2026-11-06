@@ -243,3 +243,45 @@ func TestCreateVirtualMachineUnknownSubnetReturns400(t *testing.T) {
 		t.Fatalf("expected INVALID_SUBNET, got %q", respBody.Error.Code)
 	}
 }
+
+func TestCreateVirtualMachineMapsCatalogErrors(t *testing.T) {
+	cases := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantCode   string
+	}{
+		{"unknown image", `{"name":"web-1","imageId":"missing","flavorId":"small"}`, http.StatusBadRequest, "INVALID_IMAGE"},
+		{"image not ready", `{"name":"web-1","imageId":"importing","flavorId":"small"}`, http.StatusConflict, "IMAGE_NOT_READY"},
+		{"unknown flavor", `{"name":"web-1","imageId":"platform-cirros","flavorId":"missing"}`, http.StatusBadRequest, "INVALID_FLAVOR"},
+		{"flavor disk too small", `{"name":"web-1","imageId":"platform-cirros","flavorId":"tiny"}`, http.StatusBadRequest, "FLAVOR_DISK_TOO_SMALL"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provisioner := &recordingProvisioner{}
+			router := NewRouterWithProvisioner("test", &fakeCatalogStore{}, provisioner)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/platform/vms", bytes.NewBufferString(tc.body))
+			rec := httptest.NewRecorder()
+
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("expected %d, got %d: %s", tc.wantStatus, rec.Code, rec.Body.String())
+			}
+			var respBody struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &respBody); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if respBody.Error.Code != tc.wantCode {
+				t.Fatalf("expected %s, got %q", tc.wantCode, respBody.Error.Code)
+			}
+			if len(provisioner.plans) != 0 {
+				t.Fatalf("provisioner must not be called, got %#v", provisioner.plans)
+			}
+		})
+	}
+}

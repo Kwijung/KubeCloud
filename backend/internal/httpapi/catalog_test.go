@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,6 +25,8 @@ type fakeCatalogStore struct {
 	subnets         []domain.Subnet
 	createSubnetErr error
 	deleteSubnetErr error
+	createImageErr  error
+	deleteImageErr  error
 }
 
 type fakeStatusReader struct {
@@ -104,6 +107,16 @@ func (s *fakeCatalogStore) CreateVirtualMachine(_ context.Context, projectID str
 	s.createInputs = append(s.createInputs, input)
 	if input.SubnetID == "missing" {
 		return domain.VirtualMachineProvisioningPlan{}, storepkg.ErrNotFound
+	}
+	switch {
+	case input.ImageID == "missing":
+		return domain.VirtualMachineProvisioningPlan{}, storepkg.ErrImageNotFound
+	case input.ImageID == "importing":
+		return domain.VirtualMachineProvisioningPlan{}, storepkg.ErrImageNotReady
+	case input.FlavorID == "missing":
+		return domain.VirtualMachineProvisioningPlan{}, storepkg.ErrFlavorNotFound
+	case input.FlavorID == "tiny":
+		return domain.VirtualMachineProvisioningPlan{}, storepkg.ErrFlavorDiskTooSmall
 	}
 	plan := s.createdPlan
 	if plan.VirtualMachine.ID == "" {
@@ -509,5 +522,56 @@ func TestStreamConsoleDelegatesRunningVirtualMachine(t *testing.T) {
 	}
 	if !streamer.called || streamer.vmID != "platform-portal-02" {
 		t.Fatalf("expected console streamer for platform-portal-02, called=%t vmID=%q", streamer.called, streamer.vmID)
+	}
+}
+
+func TestGetVirtualMachineIncludesSubnetAndNetwork(t *testing.T) {
+	vm := domain.VirtualMachine{ID: "platform-web-01", ProjectID: "platform", Name: "web-01", SubnetID: "platform-app-web", Status: "Running"}
+	router := NewRouterWithProvisionerAndStatusReader("test", &fakeCatalogStore{
+		vms:      []domain.VirtualMachine{vm},
+		networks: []domain.Network{{ID: "platform-app", ProjectID: "platform", Name: "app", CIDR: "10.20.0.0/16"}},
+		subnets:  []domain.Subnet{{ID: "platform-app-web", NetworkID: "platform-app", ProjectID: "platform", Name: "web", CIDR: "10.20.1.0/24", Type: "public"}},
+	}, noopProvisioner{}, fakeStatusReader{
+		details: map[string]domain.VirtualMachineDetail{"platform-web-01": {VirtualMachine: vm, RuntimeStatus: "Running"}},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/platform/vms/platform-web-01", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Data domain.VirtualMachineDetail `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Data.Subnet == nil || body.Data.Subnet.Name != "web" || body.Data.Subnet.Type != "public" {
+		t.Fatalf("expected subnet web/public, got %#v", body.Data.Subnet)
+	}
+	if body.Data.Network == nil || body.Data.Network.Name != "app" {
+		t.Fatalf("expected network app, got %#v", body.Data.Network)
+	}
+}
+
+func TestGetVirtualMachineWithoutSubnetOmitsNetwork(t *testing.T) {
+	vm := domain.VirtualMachine{ID: "platform-web-02", ProjectID: "platform", Name: "web-02", Status: "Running"}
+	router := NewRouterWithProvisionerAndStatusReader("test", &fakeCatalogStore{
+		vms: []domain.VirtualMachine{vm},
+	}, noopProvisioner{}, fakeStatusReader{
+		details: map[string]domain.VirtualMachineDetail{"platform-web-02": {VirtualMachine: vm}},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/platform/vms/platform-web-02", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), `"subnet"`) || strings.Contains(rec.Body.String(), `"network"`) {
+		t.Fatalf("expected no subnet/network fields, got %s", rec.Body.String())
 	}
 }

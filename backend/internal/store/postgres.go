@@ -112,6 +112,24 @@ CREATE TABLE IF NOT EXISTS subnets (
 ALTER TABLE virtual_machines
   ADD COLUMN IF NOT EXISTS subnet_id text REFERENCES subnets(id);
 
+-- NULL when the image is not qcow2 or could not be probed; VM creation then skips the disk size check.
+ALTER TABLE images
+  ADD COLUMN IF NOT EXISTS virtual_size_bytes bigint;
+
+-- Public images (scope 'public') belong to no project and every project can use them.
+ALTER TABLE images
+  ALTER COLUMN project_id DROP NOT NULL;
+ALTER TABLE images
+  ADD COLUMN IF NOT EXISTS scope text NOT NULL DEFAULT 'project';
+-- The seeded CirrOS image was a Platform project image before scopes existed. It becomes public and keeps
+-- its ID, which existing VMs reference.
+UPDATE images SET project_id = NULL, scope = 'public' WHERE id = 'platform-cirros' AND scope = 'project';
+DO $$ BEGIN
+  ALTER TABLE images ADD CONSTRAINT images_scope_project
+    CHECK (scope IN ('public', 'project') AND (scope = 'public') = (project_id IS NULL));
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
 -- NULL for VPCs created before VPC CIDRs existed; their subnets are not range-checked.
 ALTER TABLE networks
   ADD COLUMN IF NOT EXISTS cidr text;
@@ -134,10 +152,10 @@ SET name = EXCLUDED.name,
     root_disk_bytes = EXCLUDED.root_disk_bytes,
     enabled = EXCLUDED.enabled;
 
-INSERT INTO images (id, project_id, name, os_type, source_url, status)
+INSERT INTO images (id, project_id, name, os_type, source_url, status, scope)
 VALUES
-  ('platform-cirros', 'platform', 'CirrOS smoke image', 'linux', 'https://download.cirros-cloud.net/0.6.2/cirros-0.6.2-x86_64-disk.img', 'Ready'),
-  ('data-ubuntu-22', 'data', 'Ubuntu 22.04', 'linux', 'https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img', 'Importing')
+  ('platform-cirros', NULL, 'CirrOS 0.6.2', 'linux', 'https://download.cirros-cloud.net/0.6.2/cirros-0.6.2-x86_64-disk.img', 'Ready', 'public'),
+  ('data-ubuntu-22', 'data', 'Ubuntu 22.04', 'linux', 'https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img', 'Importing', 'project')
 ON CONFLICT (id) DO NOTHING;
 `)
 	return err
@@ -188,10 +206,10 @@ ORDER BY cpu, memory_bytes, root_disk_bytes`)
 
 func (p *Postgres) ListImages(ctx context.Context, projectID string) ([]domain.Image, error) {
 	rows, err := p.pool.Query(ctx, `
-SELECT id, project_id, name, os_type, source_url, status, created_at
+SELECT `+imageSelectColumns+`
 FROM images
-WHERE project_id = $1
-ORDER BY created_at DESC, name`, projectID)
+WHERE project_id = $1 OR scope = 'public'
+ORDER BY scope = 'public', created_at DESC, name`, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +218,7 @@ ORDER BY created_at DESC, name`, projectID)
 	var images []domain.Image
 	for rows.Next() {
 		var image domain.Image
-		if err := rows.Scan(&image.ID, &image.ProjectID, &image.Name, &image.OSType, &image.SourceURL, &image.Status, &image.CreatedAt); err != nil {
+		if err := scanImage(rows, &image); err != nil {
 			return nil, err
 		}
 		images = append(images, image)
@@ -261,6 +279,17 @@ WHERE project_id = $1 AND id = $2`, projectID, vmID)
 	return nil
 }
 
+var (
+	// ErrImageNotFound is returned when the image does not exist in the project.
+	ErrImageNotFound = errors.New("image not found in this project")
+	// ErrImageNotReady is returned when the image exists but has not finished importing.
+	ErrImageNotReady = errors.New("image is not ready")
+	// ErrFlavorNotFound is returned when the flavor does not exist or is disabled.
+	ErrFlavorNotFound = errors.New("flavor not found")
+	// ErrFlavorDiskTooSmall is returned when the flavor's root disk cannot hold the image.
+	ErrFlavorDiskTooSmall = errors.New("flavor root disk is smaller than the image")
+)
+
 func (p *Postgres) CreateVirtualMachine(ctx context.Context, projectID string, input domain.CreateVirtualMachineInput) (domain.VirtualMachineProvisioningPlan, error) {
 	name := strings.TrimSpace(input.Name)
 	imageID := strings.TrimSpace(input.ImageID)
@@ -276,14 +305,18 @@ func (p *Postgres) CreateVirtualMachine(ctx context.Context, projectID string, i
 
 	var image domain.Image
 	if err := tx.QueryRow(ctx, `
-SELECT id, project_id, name, os_type, source_url, status, created_at
+SELECT `+imageSelectColumns+`
 FROM images
-WHERE id = $1 AND project_id = $2`, imageID, projectID).
-		Scan(&image.ID, &image.ProjectID, &image.Name, &image.OSType, &image.SourceURL, &image.Status, &image.CreatedAt); err != nil {
+WHERE id = $1 AND (project_id = $2 OR scope = 'public')`, imageID, projectID).
+		Scan(imageColumns(&image)...); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.VirtualMachineProvisioningPlan{}, ErrImageNotFound
+		}
 		return domain.VirtualMachineProvisioningPlan{}, err
 	}
+	setMinRootDisk(&image)
 	if image.Status != "Ready" {
-		return domain.VirtualMachineProvisioningPlan{}, fmt.Errorf("image %s is not ready", image.ID)
+		return domain.VirtualMachineProvisioningPlan{}, fmt.Errorf("image %s is %s: %w", image.ID, image.Status, ErrImageNotReady)
 	}
 
 	var flavor domain.Flavor
@@ -292,7 +325,14 @@ SELECT id, name, cpu, memory_bytes, root_disk_bytes, enabled
 FROM flavors
 WHERE id = $1 AND enabled = true`, flavorID).
 		Scan(&flavor.ID, &flavor.Name, &flavor.CPU, &flavor.MemoryBytes, &flavor.RootDiskBytes, &flavor.Enabled); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.VirtualMachineProvisioningPlan{}, ErrFlavorNotFound
+		}
 		return domain.VirtualMachineProvisioningPlan{}, err
+	}
+	if image.MinRootDiskBytes != nil && flavor.RootDiskBytes < *image.MinRootDiskBytes {
+		return domain.VirtualMachineProvisioningPlan{}, fmt.Errorf("flavor %s root disk %d bytes, image %s needs %d: %w",
+			flavor.ID, flavor.RootDiskBytes, image.ID, *image.MinRootDiskBytes, ErrFlavorDiskTooSmall)
 	}
 
 	subnetID := strings.TrimSpace(input.SubnetID)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/kloudia/kloudia/backend/internal/config"
 	"github.com/kloudia/kloudia/backend/internal/httpapi"
+	"github.com/kloudia/kloudia/backend/internal/imageprobe"
 	"github.com/kloudia/kloudia/backend/internal/kubevirt"
 	"github.com/kloudia/kloudia/backend/internal/store"
 )
@@ -29,7 +30,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	handler := httpapi.NewRouterWithDependencies(httpapi.Dependencies{Version: cfg.Version, Store: db, ReservedCIDRs: reservedCIDRs})
+	prober := imageprobe.New()
+	go backfillImageSizes(db, prober)
+	handler := httpapi.NewRouterWithDependencies(httpapi.Dependencies{Version: cfg.Version, Store: db, ReservedCIDRs: reservedCIDRs, ImageProber: prober})
 	if cfg.KubeVirtEnabled {
 		applier, err := kubevirt.NewDynamicApplier(cfg.KubeconfigPath)
 		if err != nil {
@@ -56,6 +59,7 @@ func main() {
 			StatusReader:    statusReader,
 			ConsoleStreamer: consoleStreamer,
 			ReservedCIDRs:   reservedCIDRs,
+			ImageProber:     prober,
 		}
 		if cfg.NetworkProvisioningEnabled {
 			deps.NetworkProvisioner = kubevirt.NewNetworkProvisioner(cfg.KubeVirtNamespace, cfg.OVNExternalNetwork, applier)
@@ -75,5 +79,28 @@ func main() {
 	log.Printf("kloudia api listening on %s", cfg.Addr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("api server failed: %v", err)
+	}
+}
+
+// backfillImageSizes probes images registered before sizes were recorded, so VM creation can check them.
+func backfillImageSizes(db *store.Postgres, prober *imageprobe.Prober) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	images, err := db.ListImagesWithoutVirtualSize(ctx)
+	if err != nil {
+		log.Printf("image size backfill: list images: %v", err)
+		return
+	}
+	for _, image := range images {
+		size, err := prober.VirtualSize(ctx, image.SourceURL)
+		if err != nil {
+			log.Printf("image size backfill: %s: %v", image.ID, err)
+			continue
+		}
+		if err := db.SetImageVirtualSize(ctx, image.ID, size); err != nil {
+			log.Printf("image size backfill: %s: save: %v", image.ID, err)
+			continue
+		}
+		log.Printf("image size backfill: %s is %d bytes", image.ID, size)
 	}
 }
