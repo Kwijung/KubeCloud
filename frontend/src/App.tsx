@@ -905,6 +905,23 @@ async function decodeConsoleMessage(data: MessageEvent["data"]): Promise<string>
 }
 
 function consoleKeyValue(event: KeyboardEvent<HTMLDivElement>): string {
+  // Ctrl+letter sends the terminal control character (Ctrl+C = \x03 interrupts, Ctrl+D = \x04 ends input).
+  // Cmd/Alt combinations are left to the browser so copy and paste keep working.
+  // The physical key (event.code) is used, not event.key: with a Korean or other IME active, Ctrl+C reports
+  // event.key as "ㅊ" or "Process".
+  if (event.ctrlKey && !event.metaKey && !event.altKey) {
+    const letter = /^Key([A-Z])$/.exec(event.code);
+    if (letter) {
+      return String.fromCharCode(letter[1].charCodeAt(0) - 64);
+    }
+    const controlSymbols: Record<string, string> = {
+      BracketLeft: "\x1b",
+      Backslash: "\x1c",
+      BracketRight: "\x1d",
+      Space: "\x00",
+    };
+    return controlSymbols[event.code] ?? "";
+  }
   if (event.key.length === 1) {
     return event.key;
   }
