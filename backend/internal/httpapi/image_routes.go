@@ -7,14 +7,17 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/kloudia/kloudia/backend/internal/domain"
+	"github.com/kloudia/kloudia/backend/internal/imageprobe"
 	storepkg "github.com/kloudia/kloudia/backend/internal/store"
 )
 
 // createImage handles an image registration request for either scope: it validates the body, reads the
 // image's virtual size when a prober is configured, and stores the image through create.
-func createImage(w http.ResponseWriter, r *http.Request, prober ImageProber, create func(context.Context, domain.CreateImageInput) (domain.Image, error)) {
+// cache asks for the image to be imported into the cluster before use.
+func createImage(w http.ResponseWriter, r *http.Request, prober ImageProber, cache bool, create func(context.Context, domain.CreateImageInput) (domain.Image, error)) {
 	var request struct {
 		Name      string `json:"name"`
 		OSType    string `json:"osType"`
@@ -24,7 +27,7 @@ func createImage(w http.ResponseWriter, r *http.Request, prober ImageProber, cre
 		writeError(w, http.StatusBadRequest, "INVALID_JSON", "request body must be valid JSON")
 		return
 	}
-	input := domain.CreateImageInput{Name: request.Name, OSType: request.OSType, SourceURL: request.SourceURL}
+	input := domain.CreateImageInput{Name: request.Name, OSType: request.OSType, SourceURL: request.SourceURL, Cache: cache}
 	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.SourceURL) == "" {
 		writeError(w, http.StatusBadRequest, "INVALID_IMAGE_REQUEST", "name and sourceUrl are required")
 		return
@@ -42,10 +45,16 @@ func createImage(w http.ResponseWriter, r *http.Request, prober ImageProber, cre
 		return
 	}
 	if prober != nil {
-		// A failed probe still registers the image; VM creation then skips the disk size check.
-		if size, err := prober.VirtualSize(r.Context(), input.SourceURL); err == nil {
+		// An image that is not qcow2 still registers with an unknown size (no disk size check, no cache). A URL
+		// that cannot be fetched is refused now rather than failing every VM later.
+		size, err := prober.VirtualSize(r.Context(), input.SourceURL)
+		switch {
+		case err == nil:
 			input.VirtualSizeBytes = &size
-		} else {
+		case errors.Is(err, imageprobe.ErrUnreachable):
+			writeError(w, http.StatusBadRequest, "IMAGE_SOURCE_UNREACHABLE", "the image url cannot be fetched: "+err.Error())
+			return
+		default:
 			log.Printf("image %q: virtual size unknown: %v", input.Name, err)
 		}
 	}
@@ -74,5 +83,20 @@ func writeImageDeleteResult(w http.ResponseWriter, imageID string, err error) {
 	default:
 		log.Printf("delete image %s: %v", imageID, err)
 		writeError(w, http.StatusInternalServerError, "IMAGE_DELETE_FAILED", "failed to delete image")
+	}
+}
+
+// deleteImageCache removes a deleted image's cache. A failure is logged: the image record is already gone,
+// and the cache volume only takes space.
+func deleteImageCache(ctx context.Context, cache ImageCache, imageID string, deleteErr error) {
+	if deleteErr != nil || cache == nil {
+		return
+	}
+	// Not tied to the request: a client hanging up must not leave the cache behind. The reconciler also
+	// sweeps caches whose image is gone.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	if err := cache.Delete(ctx, imageID); err != nil {
+		log.Printf("delete cache of image %s: %v", imageID, err)
 	}
 }

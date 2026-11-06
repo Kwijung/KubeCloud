@@ -187,6 +187,8 @@ func resourceMapping(resource map[string]any) (schema.GroupVersionResource, bool
 	switch {
 	case apiVersion == "cdi.kubevirt.io/v1beta1" && kind == "DataVolume":
 		return schema.GroupVersionResource{Group: "cdi.kubevirt.io", Version: "v1beta1", Resource: "datavolumes"}, true, nil
+	case apiVersion == "v1" && kind == "PersistentVolumeClaim":
+		return schema.GroupVersionResource{Version: "v1", Resource: "persistentvolumeclaims"}, true, nil
 	case apiVersion == "kubevirt.io/v1" && kind == "VirtualMachine":
 		return schema.GroupVersionResource{Group: "kubevirt.io", Version: "v1", Resource: "virtualmachines"}, true, nil
 	case apiVersion == "kubeovn.io/v1" && kind == "Vpc":

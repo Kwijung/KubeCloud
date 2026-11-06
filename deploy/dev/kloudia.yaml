@@ -21,6 +21,10 @@ rules:
   - apiGroups: ["cdi.kubevirt.io"]
     resources: ["datavolumes"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # VM disks are cloned from image cache DataVolumes; CDI checks that the cloner may read the source.
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datavolumes/source"]
+    verbs: ["create"]
   - apiGroups: ["kubeovn.io"]
     resources: ["vpcs", "subnets", "vpc-nat-gateways", "iptables-eips", "iptables-snat-rules"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -36,6 +40,10 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces", "persistentvolumeclaims", "pods", "events", "nodes"]
     verbs: ["get", "list", "watch"]
+  # An image cache's volume is deleted with the image, also when CDI has already removed its DataVolume.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["delete"]
   # VM boot logs come from the virt-launcher pod's guest-console-log container.
   - apiGroups: [""]
     resources: ["pods/log"]

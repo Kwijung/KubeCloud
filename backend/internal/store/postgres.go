@@ -130,9 +130,17 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
+-- An image of known size is imported into the cluster once (cache_volume, a DataVolume) and VMs clone it.
+ALTER TABLE images
+  ADD COLUMN IF NOT EXISTS cache_volume text;
+ALTER TABLE images
+  ADD COLUMN IF NOT EXISTS cache_status text NOT NULL DEFAULT '';
+ALTER TABLE images
+  ADD COLUMN IF NOT EXISTS status_message text NOT NULL DEFAULT '';
+
 -- The Ubuntu seed image was seeded as Importing, a state nothing ever moved it out of. Images are Ready when
 -- registered; CDI downloads them per VM.
-UPDATE images SET status = 'Ready' WHERE id = 'data-ubuntu-22' AND status = 'Importing';
+UPDATE images SET status = 'Ready' WHERE id = 'data-ubuntu-22' AND status = 'Importing' AND cache_status = '';
 
 -- NULL for VPCs created before VPC CIDRs existed; their subnets are not range-checked.
 ALTER TABLE networks
@@ -336,9 +344,16 @@ FOR SHARE`, flavorID).
 		}
 		return domain.VirtualMachineProvisioningPlan{}, err
 	}
-	if image.MinRootDiskBytes != nil && flavor.RootDiskBytes < *image.MinRootDiskBytes {
-		return domain.VirtualMachineProvisioningPlan{}, fmt.Errorf("flavor %s root disk %d bytes, image %s needs %d: %w",
-			flavor.ID, flavor.RootDiskBytes, image.ID, *image.MinRootDiskBytes, ErrFlavorDiskTooSmall)
+	if image.MinRootDiskBytes != nil {
+		need := *image.MinRootDiskBytes
+		if image.CacheStatus == domain.ImageCacheReady {
+			// The disk is cloned from the cache, and a clone cannot be smaller than its source.
+			need = domain.ImageCacheBytes(need)
+		}
+		if flavor.RootDiskBytes < need {
+			return domain.VirtualMachineProvisioningPlan{}, fmt.Errorf("flavor %s root disk %d bytes, image %s needs %d: %w",
+				flavor.ID, flavor.RootDiskBytes, image.ID, need, ErrFlavorDiskTooSmall)
+		}
 	}
 
 	subnetID := strings.TrimSpace(input.SubnetID)

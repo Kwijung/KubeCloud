@@ -54,7 +54,21 @@ type Image struct {
 	Scope string `json:"scope"`
 	// VMCount is the number of VMs using the image across all projects; only the admin image list sets it.
 	VMCount *int `json:"vmCount,omitempty"`
+	// CacheVolume is the DataVolume holding a copy of the image in the cluster, and CacheStatus its state:
+	// "" (no cache: VMs download the URL), Pending, Importing, Ready or Failed. VMs clone a Ready cache.
+	CacheVolume string `json:"cacheVolume,omitempty"`
+	CacheStatus string `json:"cacheStatus"`
+	// StatusMessage explains a Failed status, or why the cache of a Ready image failed (VMs then download it).
+	StatusMessage string `json:"statusMessage,omitempty"`
 }
+
+// Image cache states.
+const (
+	ImageCachePending   = "Pending"
+	ImageCacheImporting = "Importing"
+	ImageCacheReady     = "Ready"
+	ImageCacheFailed    = "Failed"
+)
 
 // CreateImageInput registers a cloud image by URL. CDI downloads it when a VM using the image is created.
 type CreateImageInput struct {
@@ -62,6 +76,9 @@ type CreateImageInput struct {
 	OSType           string
 	SourceURL        string
 	VirtualSizeBytes *int64
+	// Cache asks for the image to be imported into the cluster before use. It applies only when the
+	// virtual size is known; the image is then Importing until its cache is Ready.
+	Cache bool
 }
 
 type Network struct {

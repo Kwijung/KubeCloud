@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/kloudia/kloudia/backend/internal/domain"
+	"github.com/kloudia/kloudia/backend/internal/imageprobe"
 	storepkg "github.com/kloudia/kloudia/backend/internal/store"
 )
 
@@ -190,6 +192,7 @@ func (s *fakeCatalogStore) ListPublicImages(context.Context) ([]domain.Image, er
 }
 
 func (s *fakeCatalogStore) CreatePublicImage(_ context.Context, input domain.CreateImageInput) (domain.Image, error) {
+	s.lastImageInput = input
 	if s.createImageErr != nil {
 		return domain.Image{}, s.createImageErr
 	}
@@ -261,5 +264,45 @@ func TestAdminDeletePublicImageInUse(t *testing.T) {
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/v1/admin/images/public-noble", nil))
 	if rec.Code != http.StatusConflict || errorCode(t, rec) != "IMAGE_IN_USE" {
 		t.Fatalf("expected 409 IMAGE_IN_USE, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+type recordingImageCache struct{ deleted []string }
+
+func (c *recordingImageCache) Delete(_ context.Context, imageID string) error {
+	c.deleted = append(c.deleted, imageID)
+	return nil
+}
+
+func TestImageCacheIsRequestedAndCleanedUp(t *testing.T) {
+	store := &fakeCatalogStore{}
+	cache := &recordingImageCache{}
+	router := NewRouterWithDependencies(Dependencies{Version: "test", Store: store, ImageCache: cache, ImageProber: fakeImageProber{size: 1 << 30}})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/admin/images", bytes.NewBufferString(`{"name":"noble","sourceUrl":"https://example.com/noble.img"}`)))
+	if rec.Code != http.StatusCreated || !store.lastImageInput.Cache {
+		t.Fatalf("expected a cached registration, got %d %#v", rec.Code, store.lastImageInput)
+	}
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/v1/admin/images/public-noble", nil))
+	if rec.Code != http.StatusNoContent || len(cache.deleted) != 1 || cache.deleted[0] != "public-noble" {
+		t.Fatalf("deleting the image must delete its cache, got %d %#v", rec.Code, cache.deleted)
+	}
+	// A failed delete leaves the cache alone.
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/v1/admin/images/public-noble", nil))
+	if rec.Code != http.StatusNotFound || len(cache.deleted) != 1 {
+		t.Fatalf("expected 404 and no cache delete, got %d %#v", rec.Code, cache.deleted)
+	}
+}
+
+func TestCreateImageRejectsAnUnreachableURL(t *testing.T) {
+	store := &fakeCatalogStore{}
+	router := NewRouterWithDependencies(Dependencies{Version: "test", Store: store, ImageProber: fakeImageProber{err: fmt.Errorf("%w: 404 Not Found", imageprobe.ErrUnreachable)}})
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/admin/images", bytes.NewBufferString(`{"name":"gone","sourceUrl":"https://example.com/gone.img"}`)))
+	if rec.Code != http.StatusBadRequest || errorCode(t, rec) != "IMAGE_SOURCE_UNREACHABLE" || len(store.images) != 0 {
+		t.Fatalf("expected 400 IMAGE_SOURCE_UNREACHABLE and nothing stored, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

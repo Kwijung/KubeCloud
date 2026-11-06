@@ -50,6 +50,8 @@ func main() {
 		if err != nil {
 			log.Fatalf("kubevirt boot log reader setup failed: %v", err)
 		}
+		imageCache := kubevirt.NewImageCache(cfg.KubeVirtNamespace, cfg.KubeVirtStorageClassName, cfg.KubeVirtDiskAccessMode, applier, statusReader, db)
+		go imageCache.Run(context.Background(), 15*time.Second)
 		provisioner := kubevirt.NewProvisioner(cfg.KubeVirtNamespace, cfg.KubeVirtStorageClassName, applier)
 		vmDNSServers, err := cfg.VMDNSServerList()
 		if err != nil {
@@ -70,6 +72,7 @@ func main() {
 			ReservedCIDRs:   reservedCIDRs,
 			ImageProber:     prober,
 			BootLogReader:   bootLogReader,
+			ImageCache:      imageCache,
 		}
 		if cfg.NetworkProvisioningEnabled {
 			deps.NetworkProvisioner = kubevirt.NewNetworkProvisioner(cfg.KubeVirtNamespace, cfg.OVNExternalNetwork, applier)

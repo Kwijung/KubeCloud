@@ -56,6 +56,12 @@ type Provisioner interface {
 	RestartVirtualMachine(ctx context.Context, vm domain.VirtualMachine) error
 }
 
+// ImageCache keeps registered images imported in the cluster so VMs clone them instead of downloading.
+type ImageCache interface {
+	// Delete removes an image's cache once the image is deleted.
+	Delete(ctx context.Context, imageID string) error
+}
+
 // BootLogReader reads a VM's serial console output since it last started.
 type BootLogReader interface {
 	BootLog(ctx context.Context, vmID string) (string, error)
@@ -204,6 +210,8 @@ type Dependencies struct {
 	VPCNetworkingUnavailable bool
 	// BootLogReader serves the VM boot log; nil answers 501.
 	BootLogReader BootLogReader
+	// ImageCache imports newly registered images into the cluster; nil keeps images download-only.
+	ImageCache ImageCache
 }
 
 func NewRouter(version string, store Store) http.Handler {
@@ -316,7 +324,7 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 
 	router.Post("/api/v1/projects/{projectID}/images", func(w http.ResponseWriter, r *http.Request) {
 		projectID := chi.URLParam(r, "projectID")
-		createImage(w, r, deps.ImageProber, func(ctx context.Context, input domain.CreateImageInput) (domain.Image, error) {
+		createImage(w, r, deps.ImageProber, deps.ImageCache != nil, func(ctx context.Context, input domain.CreateImageInput) (domain.Image, error) {
 			return store.CreateImage(ctx, projectID, input)
 		})
 	})
@@ -324,7 +332,9 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 	// A public image is not deletable here: DeleteImage only matches the project's own images.
 	router.Delete("/api/v1/projects/{projectID}/images/{imageID}", func(w http.ResponseWriter, r *http.Request) {
 		imageID := chi.URLParam(r, "imageID")
-		writeImageDeleteResult(w, imageID, store.DeleteImage(r.Context(), chi.URLParam(r, "projectID"), imageID))
+		err := store.DeleteImage(r.Context(), chi.URLParam(r, "projectID"), imageID)
+		deleteImageCache(r.Context(), deps.ImageCache, imageID, err)
+		writeImageDeleteResult(w, imageID, err)
 	})
 
 	// Public images. These admin routes are unauthenticated until accounts and roles land; then only the
@@ -342,12 +352,14 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 	})
 
 	router.Post("/api/v1/admin/images", func(w http.ResponseWriter, r *http.Request) {
-		createImage(w, r, deps.ImageProber, store.CreatePublicImage)
+		createImage(w, r, deps.ImageProber, deps.ImageCache != nil, store.CreatePublicImage)
 	})
 
 	router.Delete("/api/v1/admin/images/{imageID}", func(w http.ResponseWriter, r *http.Request) {
 		imageID := chi.URLParam(r, "imageID")
-		writeImageDeleteResult(w, imageID, store.DeletePublicImage(r.Context(), imageID))
+		err := store.DeletePublicImage(r.Context(), imageID)
+		deleteImageCache(r.Context(), deps.ImageCache, imageID, err)
+		writeImageDeleteResult(w, imageID, err)
 	})
 
 	router.Get("/api/v1/projects/{projectID}/vms", func(w http.ResponseWriter, r *http.Request) {
