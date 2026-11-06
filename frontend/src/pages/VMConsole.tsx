@@ -156,15 +156,22 @@ export function SerialConsole({
   // Connect automatically once per run of the VM. After a disconnect or a takeover, reconnecting is the
   // user's call; otherwise two open consoles would keep taking the console from each other.
   const autoConnected = useRef(false);
+  // When the VM's current run started, as seen here. A capability read before it (cached from the previous
+  // run) must not decide the connection: it would say the console is free when another tab has it now.
+  const runSeenAt = useRef(Date.now());
   useEffect(() => {
     if (!running) {
       socketRef.current?.close();
       socketRef.current = null;
       autoConnected.current = false;
+      runSeenAt.current = Number.POSITIVE_INFINITY;
       setState("unavailable");
       return;
     }
-    if (!capability.data || autoConnected.current) {
+    if (runSeenAt.current === Number.POSITIVE_INFINITY) {
+      runSeenAt.current = Date.now();
+    }
+    if (!capability.data || autoConnected.current || capability.dataUpdatedAt < runSeenAt.current) {
       return;
     }
     autoConnected.current = true;
@@ -175,7 +182,7 @@ export function SerialConsole({
     } else {
       connect();
     }
-  }, [running, capability.data, connect]);
+  }, [running, capability.data, capability.dataUpdatedAt, connect]);
 
   useEffect(() => () => socketRef.current?.close(), []);
 

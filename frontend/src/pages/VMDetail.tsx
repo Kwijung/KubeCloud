@@ -4,7 +4,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import type { VirtualMachineDetail } from "../api";
 import { projectPath, useProject } from "../app/Layout";
-import { BUSY_REFRESH_MS, isVMBusy, keys, LIST_REFRESH_MS, useFlavors, useImages } from "../app/queries";
+import { BUSY_REFRESH_MS, isVMBusy, keys, LIST_REFRESH_MS, useAllFlavors, useImages } from "../app/queries";
 import { fill, formatBytes, formatDateTime, formatRelative } from "../format";
 import { statusTone, useI18n } from "../i18n";
 import { Alert, Badge, Button, Card, DescriptionList, Empty, PageHeader, Spinner, Tabs, useConfirm } from "../ui";
@@ -22,7 +22,7 @@ export function VMDetail() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const confirm = useConfirm();
-  const flavors = useFlavors();
+  const flavors = useAllFlavors();
   const images = useImages(projectId);
   const detail = useQuery({
     queryKey: keys.vm(projectId, vmId),
@@ -62,6 +62,7 @@ export function VMDetail() {
   }
 
   const data = detail.data;
+  const events = data.events ?? [];
   const vm = data.virtualMachine;
   const status = data.runtimeStatus || vm.status;
   const running = status === "Running";
@@ -151,7 +152,7 @@ export function VMDetail() {
           { value: "network", label: t.detailTabNetwork },
           { value: "disk", label: t.detailTabDisk },
           { value: "console", label: t.detailTabConsole },
-          { value: "events", label: `${t.detailTabEvents}${data.events.length ? ` (${data.events.length})` : ""}` },
+          { value: "events", label: `${t.detailTabEvents}${events.length ? ` (${events.length})` : ""}` },
         ]}
       />
 
@@ -216,11 +217,11 @@ export function VMDetail() {
 
       {tab === "events" && (
         <Card title={t.detailTabEvents} flush>
-          {data.events.length === 0 ? (
+          {events.length === 0 ? (
             <Empty title={t.detailNoEvents} />
           ) : (
             <ul className="events">
-              {data.events.map((event, index) => {
+              {events.map((event, index) => {
                 const Icon = event.type === "Warning" ? TriangleAlert : event.type === "Error" ? CircleAlert : Info;
                 const color = event.type === "Normal" ? "var(--c-text-3)" : "var(--c-warning)";
                 return (

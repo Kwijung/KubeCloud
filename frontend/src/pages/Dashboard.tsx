@@ -1,7 +1,7 @@
 import { AlertCircle, Image as ImageIcon, Loader, Network, Plus } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { projectPath, useProject } from "../app/Layout";
-import { flavorMap, isVMBusy, useFlavors, useImages, useNetworks, useAllSubnets, useVMs } from "../app/queries";
+import { flavorMap, isVMBusy, useAllFlavors, useImages, useNetworks, useAllSubnets, useVMs } from "../app/queries";
 import { fill, formatBytes, formatRelative } from "../format";
 import { statusTone, useI18n } from "../i18n";
 import { Badge, Button, Card, Empty, PageHeader } from "../ui";
@@ -14,7 +14,7 @@ export function Dashboard() {
   const images = useImages(projectId);
   const networks = useNetworks(projectId);
   const subnets = useAllSubnets(projectId, networks.data);
-  const flavors = flavorMap(useFlavors().data);
+  const flavors = flavorMap(useAllFlavors().data);
 
   const list = vms.data ?? [];
   const running = list.filter((vm) => vm.status === "Running");

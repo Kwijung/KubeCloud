@@ -10,6 +10,7 @@ export const BUSY_REFRESH_MS = 4000;
 export const keys = {
   projects: ["projects"] as const,
   flavors: ["flavors"] as const,
+  allFlavors: ["flavors", "all"] as const,
   health: ["health"] as const,
   preflight: ["preflight"] as const,
   vms: (projectId: string) => ["vms", projectId] as const,
@@ -33,6 +34,11 @@ export function useProjects() {
 
 export function useFlavors() {
   return useQuery({ queryKey: keys.flavors, queryFn: api.flavors, staleTime: 30000 });
+}
+
+// useAllFlavors includes hidden flavors: use it to describe existing VMs, and useFlavors to create new ones.
+export function useAllFlavors() {
+  return useQuery({ queryKey: keys.allFlavors, queryFn: api.allFlavors, staleTime: 30000 });
 }
 
 export function useVMs(projectId: string) {

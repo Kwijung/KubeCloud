@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api";
 import { projectPath, useProject } from "../app/Layout";
-import { flavorMap, keys, LIST_REFRESH_MS, useAllSubnets, useFlavors, useImages, useNetworks, useVMs } from "../app/queries";
+import { flavorMap, keys, LIST_REFRESH_MS, useAllSubnets, useAllFlavors, useImages, useNetworks, useVMs } from "../app/queries";
 import { fill, formatBytes, formatDateTime } from "../format";
 import { statusTone, useI18n } from "../i18n";
 import { Alert, Badge, Button, Card, Empty, IconButton, Input, PageHeader, Select, Spinner, useConfirm } from "../ui";
@@ -21,7 +21,7 @@ export function VMList() {
   const images = useImages(projectId);
   const networks = useNetworks(projectId);
   const subnets = useAllSubnets(projectId, networks.data);
-  const flavors = flavorMap(useFlavors().data);
+  const flavors = flavorMap(useAllFlavors().data);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [vpcFilter, setVpcFilter] = useState("");

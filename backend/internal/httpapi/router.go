@@ -295,8 +295,14 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 		writeJSON(w, http.StatusOK, map[string]any{"data": projects})
 	})
 
+	// Projects choose from enabled flavors. includeDisabled=true also returns hidden ones, so the console can
+	// still show the size of VMs created from a flavor that was later hidden.
 	router.Get("/api/v1/flavors", func(w http.ResponseWriter, r *http.Request) {
-		flavors, err := store.ListFlavors(r.Context())
+		list := store.ListFlavors
+		if r.URL.Query().Get("includeDisabled") == "true" {
+			list = store.ListAllFlavors
+		}
+		flavors, err := list(r.Context())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "FLAVORS_UNAVAILABLE", "failed to list flavors")
 			return

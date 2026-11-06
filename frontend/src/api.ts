@@ -97,7 +97,7 @@ export type VirtualMachineDetail = {
   consoleAvailable: boolean;
   subnet?: Subnet;
   network?: Network;
-  events: RuntimeEvent[];
+  events: RuntimeEvent[] | null; // null when the cluster reported none
 };
 
 export type ConsoleCapability = {
@@ -191,6 +191,8 @@ export const api = {
   preflight: () => data<PreflightResult>("GET", "/preflight"),
   projects: () => data<Project[]>("GET", "/projects"),
   flavors: () => data<Flavor[]>("GET", "/flavors"),
+  // Includes hidden flavors, for showing the size of VMs created before a flavor was hidden.
+  allFlavors: () => data<Flavor[]>("GET", "/flavors?includeDisabled=true"),
 
   networks: (projectId: string) => data<Network[]>("GET", `/projects/${projectId}/networks`),
   createNetwork: (projectId: string, name: string, cidr: string) =>
