@@ -65,7 +65,8 @@ func main() {
 			deps.NetworkProvisioner = kubevirt.NewNetworkProvisioner(cfg.KubeVirtNamespace, cfg.OVNExternalNetwork, applier)
 			log.Printf("network provisioning enabled: externalNetwork=%s", cfg.OVNExternalNetwork)
 		} else {
-			log.Printf("network provisioning disabled: VPC/subnet records are stored without kube-ovn resources")
+			deps.VPCNetworkingUnavailable = true
+			log.Printf("network provisioning disabled: VPC/subnet records are stored without kube-ovn resources, and VMs cannot attach to subnets")
 		}
 		handler = httpapi.NewRouterWithDependencies(deps)
 		log.Printf("kubevirt provisioning enabled: namespace=%s storageClass=%s", cfg.KubeVirtNamespace, cfg.KubeVirtStorageClassName)

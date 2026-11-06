@@ -169,6 +169,9 @@ type Dependencies struct {
 	ReservedCIDRs []netip.Prefix
 	// ImageProber reads image sizes at registration; nil skips it.
 	ImageProber ImageProber
+	// VPCNetworkingUnavailable is set when VMs are provisioned but VPC networking (kube-ovn) is not: a VM
+	// attached to a subnet would never start, so VM creation with a subnet is refused.
+	VPCNetworkingUnavailable bool
 }
 
 func NewRouter(version string, store Store) http.Handler {
@@ -356,6 +359,10 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 		}
 		if request.Name == "" || request.ImageID == "" || request.FlavorID == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_VM_REQUEST", "name, imageId, and flavorId are required")
+			return
+		}
+		if request.SubnetID != "" && deps.VPCNetworkingUnavailable {
+			writeError(w, http.StatusConflict, "VPC_NETWORKING_UNAVAILABLE", "this cluster has no VPC networking; create the VM without a subnet")
 			return
 		}
 		plan, err := store.CreateVirtualMachine(r.Context(), chi.URLParam(r, "projectID"), domain.CreateVirtualMachineInput{
