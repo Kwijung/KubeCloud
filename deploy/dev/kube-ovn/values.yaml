@@ -1,0 +1,18 @@
+# kube-ovn as a secondary CNI next to Cilium (Multus attaches it to VMs via NADs).
+MASTER_NODES_LABEL: "kube-ovn/role=master"
+networking:
+  NET_STACK: ipv4
+  IFACE: enp1s0
+  TUNNEL_TYPE: geneve
+func:
+  ENABLE_LB: false
+  ENABLE_NP: false
+  ENABLE_NAT_GW: true
+ipv4:
+  POD_CIDR: "10.16.0.0/16"
+  POD_GATEWAY: "10.16.0.1"
+  SVC_CIDR: "10.96.0.0/12"
+  JOIN_CIDR: "100.64.0.0/16"
+cni_conf:
+  NON_PRIMARY_CNI: true
+  CNI_CONFIG_PRIORITY: "90"
