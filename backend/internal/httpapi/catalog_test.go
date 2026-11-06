@@ -87,7 +87,13 @@ func (s fakeCatalogStore) ListProjects(context.Context) ([]domain.Project, error
 }
 
 func (s fakeCatalogStore) ListFlavors(context.Context) ([]domain.Flavor, error) {
-	return s.flavors, nil
+	var enabled []domain.Flavor
+	for _, f := range s.flavors {
+		if f.Enabled {
+			enabled = append(enabled, f)
+		}
+	}
+	return enabled, nil
 }
 
 func (s fakeCatalogStore) ListImages(_ context.Context, projectID string) ([]domain.Image, error) {
@@ -580,5 +586,28 @@ func TestGetVirtualMachineWithoutSubnetOmitsNetwork(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), `"subnet"`) || strings.Contains(rec.Body.String(), `"network"`) {
 		t.Fatalf("expected no subnet/network fields, got %s", rec.Body.String())
+	}
+}
+
+func TestListFlavorsIncludesDisabledOnRequest(t *testing.T) {
+	router := NewRouter("test", &fakeCatalogStore{flavors: []domain.Flavor{
+		{ID: "small", Name: "Small", CPU: 1, Enabled: true},
+		{ID: "old", Name: "Old", CPU: 2, Enabled: false},
+	}})
+	for _, tc := range []struct {
+		query string
+		want  int
+	}{{"", 1}, {"?includeDisabled=true", 2}} {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/flavors"+tc.query, nil))
+		var body struct {
+			Data []domain.Flavor `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || rec.Code != http.StatusOK {
+			t.Fatalf("GET flavors%s: %d %v", tc.query, rec.Code, err)
+		}
+		if len(body.Data) != tc.want {
+			t.Errorf("GET flavors%s returned %d flavors, want %d", tc.query, len(body.Data), tc.want)
+		}
 	}
 }

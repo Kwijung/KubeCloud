@@ -12,3 +12,5 @@ frontend/vite.config.d.ts
 
 backend/api
 build/
+test-results/
+playwright-report/
