@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
 	"github.com/kloudia/kloudia/backend/internal/domain"
+	"github.com/kloudia/kloudia/backend/internal/kubevirt"
 	storepkg "github.com/kloudia/kloudia/backend/internal/store"
 )
 
@@ -18,6 +19,10 @@ type Store interface {
 	Ping(ctx context.Context) error
 	ListProjects(ctx context.Context) ([]domain.Project, error)
 	ListFlavors(ctx context.Context) ([]domain.Flavor, error)
+	ListAllFlavors(ctx context.Context) ([]domain.Flavor, error)
+	CreateFlavor(ctx context.Context, input domain.FlavorInput) (domain.Flavor, error)
+	UpdateFlavor(ctx context.Context, id string, update domain.FlavorUpdate) (domain.Flavor, error)
+	DeleteFlavor(ctx context.Context, id string) error
 	ListImages(ctx context.Context, projectID string) ([]domain.Image, error)
 	CreateImage(ctx context.Context, projectID string, input domain.CreateImageInput) (domain.Image, error)
 	DeleteImage(ctx context.Context, projectID string, imageID string) error
@@ -48,6 +53,12 @@ type Provisioner interface {
 	DeleteVirtualMachine(ctx context.Context, vm domain.VirtualMachine) error
 	StartVirtualMachine(ctx context.Context, vm domain.VirtualMachine) error
 	StopVirtualMachine(ctx context.Context, vm domain.VirtualMachine) error
+	RestartVirtualMachine(ctx context.Context, vm domain.VirtualMachine) error
+}
+
+// BootLogReader reads a VM's serial console output since it last started.
+type BootLogReader interface {
+	BootLog(ctx context.Context, vmID string) (string, error)
 }
 
 type StatusReader interface {
@@ -58,6 +69,8 @@ type StatusReader interface {
 
 type ConsoleStreamer interface {
 	StreamVirtualMachineConsole(w http.ResponseWriter, r *http.Request, vm domain.VirtualMachine) error
+	// ConsoleInUse reports whether a browser is connected to the VM's console; connecting again cuts it off.
+	ConsoleInUse(vmID string) bool
 }
 
 type noopProvisioner struct{}
@@ -75,6 +88,10 @@ func (noopProvisioner) StartVirtualMachine(context.Context, domain.VirtualMachin
 }
 
 func (noopProvisioner) StopVirtualMachine(context.Context, domain.VirtualMachine) error {
+	return nil
+}
+
+func (noopProvisioner) RestartVirtualMachine(context.Context, domain.VirtualMachine) error {
 	return nil
 }
 
@@ -103,6 +120,10 @@ type noopConsoleStreamer struct{}
 
 func (noopConsoleStreamer) StreamVirtualMachineConsole(http.ResponseWriter, *http.Request, domain.VirtualMachine) error {
 	return nil
+}
+
+func (noopConsoleStreamer) ConsoleInUse(string) bool {
+	return false
 }
 
 type NetworkProvisioner interface {
@@ -181,6 +202,8 @@ type Dependencies struct {
 	// VPCNetworkingUnavailable is set when VMs are provisioned but VPC networking (kube-ovn) is not: a VM
 	// attached to a subnet would never start, so VM creation with a subnet is refused.
 	VPCNetworkingUnavailable bool
+	// BootLogReader serves the VM boot log; nil answers 501.
+	BootLogReader BootLogReader
 }
 
 func NewRouter(version string, store Store) http.Handler {
@@ -228,7 +251,7 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 	router := chi.NewRouter()
 	router.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:5173", "http://127.0.0.1:5174"},
-		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
+		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		AllowCredentials: true,
 		MaxAge:           300,
@@ -306,6 +329,8 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 
 	// Public images. These admin routes are unauthenticated until accounts and roles land; then only the
 	// admin role may call them.
+	registerFlavorRoutes(router, store)
+
 	router.Get("/api/v1/admin/images", func(w http.ResponseWriter, r *http.Request) {
 		images, err := store.ListPublicImages(r.Context())
 		if err != nil {
@@ -457,6 +482,53 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 		w.WriteHeader(http.StatusAccepted)
 	})
 
+	router.Post("/api/v1/projects/{projectID}/vms/{vmID}/restart", func(w http.ResponseWriter, r *http.Request) {
+		vm, err := store.GetVirtualMachine(r.Context(), chi.URLParam(r, "projectID"), chi.URLParam(r, "vmID"))
+		if err != nil {
+			writeError(w, http.StatusNotFound, "VM_NOT_FOUND", "virtual machine was not found")
+			return
+		}
+		status, err := statusReader.GetVirtualMachineStatus(r.Context(), vm)
+		if err != nil {
+			log.Printf("restart %s: read status: %v", vm.ID, err)
+			writeError(w, http.StatusInternalServerError, "VM_STATUS_UNAVAILABLE", "failed to read virtual machine status")
+			return
+		}
+		if status != "Running" {
+			writeError(w, http.StatusConflict, "VM_NOT_RUNNING", "only a running virtual machine can be restarted")
+			return
+		}
+		if err := provisioner.RestartVirtualMachine(r.Context(), vm); err != nil {
+			log.Printf("restart %s: %v", vm.ID, err)
+			writeError(w, http.StatusBadGateway, "VM_RESTART_FAILED", "failed to restart virtual machine")
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	router.Get("/api/v1/projects/{projectID}/vms/{vmID}/console/log", func(w http.ResponseWriter, r *http.Request) {
+		vm, err := store.GetVirtualMachine(r.Context(), chi.URLParam(r, "projectID"), chi.URLParam(r, "vmID"))
+		if err != nil {
+			writeError(w, http.StatusNotFound, "VM_NOT_FOUND", "virtual machine was not found")
+			return
+		}
+		if deps.BootLogReader == nil {
+			writeError(w, http.StatusNotImplemented, "BOOT_LOG_NOT_CONFIGURED", "boot logs are not available without KubeVirt")
+			return
+		}
+		bootLog, err := deps.BootLogReader.BootLog(r.Context(), vm.ID)
+		if err != nil {
+			if errors.Is(err, kubevirt.ErrBootLogUnavailable) {
+				writeError(w, http.StatusConflict, "BOOT_LOG_UNAVAILABLE", "the virtual machine is not running")
+				return
+			}
+			log.Printf("boot log %s: %v", vm.ID, err)
+			writeError(w, http.StatusBadGateway, "BOOT_LOG_FAILED", "failed to read the boot log")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]string{"log": bootLog}})
+	})
+
 	router.Get("/api/v1/projects/{projectID}/vms/{vmID}/console", func(w http.ResponseWriter, r *http.Request) {
 		vm, err := store.GetVirtualMachine(r.Context(), chi.URLParam(r, "projectID"), chi.URLParam(r, "vmID"))
 		if err != nil {
@@ -471,6 +543,7 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"data": map[string]any{
 				"available": detail.ConsoleAvailable && detail.RuntimeStatus == "Running",
+				"inUse":     consoleStreamer.ConsoleInUse(vm.ID),
 				"message":   "KubeVirt console streaming is available while the VM is running",
 			},
 		})

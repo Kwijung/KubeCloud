@@ -149,12 +149,8 @@ VALUES
   ('small', 'Small', 1, 536870912, 2147483648, true),
   ('medium', 'Medium', 2, 2147483648, 10737418240, true),
   ('large', 'Large', 4, 4294967296, 21474836480, true)
-ON CONFLICT (id) DO UPDATE
-SET name = EXCLUDED.name,
-    cpu = EXCLUDED.cpu,
-    memory_bytes = EXCLUDED.memory_bytes,
-    root_disk_bytes = EXCLUDED.root_disk_bytes,
-    enabled = EXCLUDED.enabled;
+-- Admins manage flavors; seeding only fills an empty catalog and never reverts their edits.
+ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO images (id, project_id, name, os_type, source_url, status, scope)
 VALUES

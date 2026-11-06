@@ -12,6 +12,7 @@ type recordingApplier struct {
 	deletedResources []map[string]any
 	patchedResources []map[string]any
 	runStrategies    []string
+	restarted        []string
 }
 
 func (a *recordingApplier) Apply(_ context.Context, resource map[string]any) error {
@@ -187,5 +188,21 @@ func TestProvisionerUsesConfiguredDiskAccessMode(t *testing.T) {
 	modes := accessModes(t, func(p *Provisioner) { p.SetDiskAccessMode("ReadWriteMany") })
 	if len(modes) != 1 || modes[0] != "ReadWriteMany" {
 		t.Fatalf("expected ReadWriteMany, got %#v", modes)
+	}
+}
+
+func (a *recordingApplier) RestartVirtualMachine(_ context.Context, _ string, name string) error {
+	a.restarted = append(a.restarted, name)
+	return nil
+}
+
+func TestProvisionerRestartsVirtualMachine(t *testing.T) {
+	applier := &recordingApplier{}
+	provisioner := NewProvisioner("kloudia-vms", "test-delete", applier)
+	if err := provisioner.RestartVirtualMachine(context.Background(), domain.VirtualMachine{ID: "platform-web-01"}); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	if len(applier.restarted) != 1 || applier.restarted[0] != "platform-web-01" {
+		t.Fatalf("expected a restart of platform-web-01, got %#v", applier.restarted)
 	}
 }

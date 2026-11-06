@@ -36,6 +36,10 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces", "persistentvolumeclaims", "pods", "events", "nodes"]
     verbs: ["get", "list", "watch"]
+  # VM boot logs come from the virt-launcher pod's guest-console-log container.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

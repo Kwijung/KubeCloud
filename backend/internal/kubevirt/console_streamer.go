@@ -22,6 +22,7 @@ const consoleSubprotocol = "binary.k8s.io"
 type ConsoleStreamer struct {
 	namespace  string
 	restConfig *rest.Config
+	sessions   consoleSessions
 	upgrader   websocket.Upgrader
 }
 
@@ -45,10 +46,15 @@ func (s *ConsoleStreamer) StreamVirtualMachineConsole(w http.ResponseWriter, r *
 	if s == nil || s.restConfig == nil {
 		return fmt.Errorf("kubevirt console streamer is not configured")
 	}
+	// KubeVirt drops the VM's current console connection when this one connects, so the session that
+	// is cut off is marked first and closes with ConsoleReplacedCloseCode.
+	session, previous := s.sessions.begin(vm.ID)
 	upstream, err := s.dial(r, vm.ID)
 	if err != nil {
+		s.sessions.abort(vm.ID, session, previous)
 		return err
 	}
+	defer s.sessions.end(vm.ID, session)
 	client, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		_ = upstream.Close()
@@ -56,7 +62,7 @@ func (s *ConsoleStreamer) StreamVirtualMachineConsole(w http.ResponseWriter, r *
 	}
 	defer client.Close()
 	defer upstream.Close()
-	proxyWebSockets(client, upstream)
+	proxyWebSockets(client, upstream, session.closeCode)
 	return nil
 }
 
@@ -166,10 +172,22 @@ func (rt *consoleWebSocketRoundTripper) RoundTrip(req *http.Request) (*http.Resp
 	return resp, nil
 }
 
-func proxyWebSockets(client *websocket.Conn, upstream *websocket.Conn) {
+// ConsoleInUse reports whether a browser is connected to the VM's serial console through this API.
+func (s *ConsoleStreamer) ConsoleInUse(vmID string) bool {
+	return s != nil && s.sessions.inUse(vmID)
+}
+
+// proxyWebSockets copies messages both ways until either side closes. clientCloseCode is evaluated when
+// closing, so a session replaced meanwhile tells its browser why.
+func proxyWebSockets(client *websocket.Conn, upstream *websocket.Conn, clientCloseCode func() int) {
 	var once sync.Once
 	closeBoth := func() {
-		_ = client.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+		code := clientCloseCode()
+		reason := ""
+		if code == ConsoleReplacedCloseCode {
+			reason = "another session connected to this console"
+		}
+		_ = client.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason), time.Now().Add(time.Second))
 		_ = upstream.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
 		_ = client.Close()
 		_ = upstream.Close()

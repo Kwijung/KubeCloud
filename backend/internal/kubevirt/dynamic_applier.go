@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -17,6 +21,7 @@ import (
 
 type DynamicApplier struct {
 	client dynamic.Interface
+	config *rest.Config
 }
 
 func NewDynamicApplier(kubeconfigPath string) (*DynamicApplier, error) {
@@ -28,7 +33,7 @@ func NewDynamicApplier(kubeconfigPath string) (*DynamicApplier, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &DynamicApplier{client: client}, nil
+	return &DynamicApplier{client: client, config: cfg}, nil
 }
 
 func (a *DynamicApplier) Apply(ctx context.Context, resource map[string]any) error {
@@ -135,6 +140,37 @@ func (a *DynamicApplier) SetVirtualMachineRunStrategy(ctx context.Context, names
 		Namespace(namespace).
 		Patch(ctx, name, types.MergePatchType, patch, v1.PatchOptions{})
 	return err
+}
+
+// RestartVirtualMachine calls PUT .../virtualmachines/{name}/restart on KubeVirt's subresource API, which
+// the dynamic client cannot reach.
+func (a *DynamicApplier) RestartVirtualMachine(ctx context.Context, namespace string, name string) error {
+	if a == nil || a.config == nil {
+		return fmt.Errorf("kubernetes client is not configured")
+	}
+	client, err := rest.HTTPClientFor(a.config)
+	if err != nil {
+		return err
+	}
+	target, err := url.JoinPath(a.config.Host, "apis", "subresources.kubevirt.io", "v1", "namespaces", namespace, "virtualmachines", name, "restart")
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, target, strings.NewReader("{}"))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("restart %s/%s: %s: %s", namespace, name, resp.Status, strings.TrimSpace(string(body)))
+	}
+	return nil
 }
 
 func buildRESTConfig(kubeconfigPath string) (*rest.Config, error) {

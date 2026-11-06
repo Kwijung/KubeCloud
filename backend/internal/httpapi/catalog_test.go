@@ -27,6 +27,7 @@ type fakeCatalogStore struct {
 	deleteSubnetErr error
 	createImageErr  error
 	deleteImageErr  error
+	flavorErr       error
 }
 
 type fakeStatusReader struct {
@@ -35,6 +36,7 @@ type fakeStatusReader struct {
 }
 
 type recordingConsoleStreamer struct {
+	inUse  bool
 	called bool
 	vmID   string
 }
@@ -44,6 +46,10 @@ func (s *recordingConsoleStreamer) StreamVirtualMachineConsole(w http.ResponseWr
 	s.vmID = vm.ID
 	w.WriteHeader(http.StatusNoContent)
 	return nil
+}
+
+func (s *recordingConsoleStreamer) ConsoleInUse(string) bool {
+	return s.inUse
 }
 
 func (r fakeStatusReader) GetVirtualMachineStatus(_ context.Context, vm domain.VirtualMachine) (string, error) {

@@ -46,6 +46,10 @@ func main() {
 		if err != nil {
 			log.Fatalf("kubevirt console streamer setup failed: %v", err)
 		}
+		bootLogReader, err := kubevirt.NewKubernetesBootLogReader(cfg.KubeVirtNamespace, cfg.KubeconfigPath)
+		if err != nil {
+			log.Fatalf("kubevirt boot log reader setup failed: %v", err)
+		}
 		provisioner := kubevirt.NewProvisioner(cfg.KubeVirtNamespace, cfg.KubeVirtStorageClassName, applier)
 		vmDNSServers, err := cfg.VMDNSServerList()
 		if err != nil {
@@ -65,6 +69,7 @@ func main() {
 			ConsoleStreamer: consoleStreamer,
 			ReservedCIDRs:   reservedCIDRs,
 			ImageProber:     prober,
+			BootLogReader:   bootLogReader,
 		}
 		if cfg.NetworkProvisioningEnabled {
 			deps.NetworkProvisioner = kubevirt.NewNetworkProvisioner(cfg.KubeVirtNamespace, cfg.OVNExternalNetwork, applier)
