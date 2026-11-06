@@ -25,11 +25,7 @@ func BuildResources(namespace string, storageClassName string, plan domain.Virtu
 			"labels":    labels(plan),
 		},
 		"spec": map[string]any{
-			"source": map[string]any{
-				"http": map[string]any{
-					"url": plan.Image.SourceURL,
-				},
-			},
+			"source": rootDiskSource(namespace, plan.Image),
 			"pvc": map[string]any{
 				"accessModes": []any{"ReadWriteOnce"},
 				"resources": map[string]any{
@@ -186,6 +182,14 @@ func applyDNSServers(vm map[string]any, servers []string) {
 	}
 	templateSpec["dnsPolicy"] = "None"
 	templateSpec["dnsConfig"] = map[string]any{"nameservers": nameservers}
+}
+
+// rootDiskSource clones the image's cache when it is ready and downloads the image URL otherwise.
+func rootDiskSource(namespace string, image domain.Image) map[string]any {
+	if image.CacheStatus == domain.ImageCacheReady && image.CacheVolume != "" {
+		return map[string]any{"pvc": map[string]any{"namespace": namespace, "name": image.CacheVolume}}
+	}
+	return map[string]any{"http": map[string]any{"url": image.SourceURL}}
 }
 
 func BuildDeleteResources(namespace string, vm domain.VirtualMachine) Resources {

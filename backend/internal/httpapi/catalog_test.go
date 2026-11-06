@@ -28,6 +28,7 @@ type fakeCatalogStore struct {
 	createImageErr  error
 	deleteImageErr  error
 	flavorErr       error
+	lastImageInput  domain.CreateImageInput
 }
 
 type fakeStatusReader struct {

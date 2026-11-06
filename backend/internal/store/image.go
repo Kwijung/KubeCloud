@@ -62,16 +62,22 @@ func (p *Postgres) createImage(ctx context.Context, projectID *string, input dom
 		scope, idPrefix = "project", *projectID
 	}
 	id := makeVirtualMachineID(idPrefix, input.Name)
+	// An image of known size is imported into the cluster first and is Importing until its cache is Ready.
+	// One of unknown size (not qcow2) cannot be sized for a cache; it is Ready at once and VMs download it.
+	status, cacheVolume, cacheStatus := "Ready", "", ""
+	if input.Cache && input.VirtualSizeBytes != nil {
+		status, cacheVolume, cacheStatus = "Importing", domain.ImageCacheVolumeName(id), domain.ImageCachePending
+	}
 	var image domain.Image
 	err = p.pool.QueryRow(ctx, `
-INSERT INTO images (id, project_id, name, os_type, source_url, status, virtual_size_bytes, scope)
-SELECT $1, $2, $3, $4, $5, 'Ready', $6, $7
+INSERT INTO images (id, project_id, name, os_type, source_url, status, virtual_size_bytes, scope, cache_volume, cache_status)
+SELECT $1, $2, $3, $4, $5, $8, $6, $7, NULLIF($9, ''), $10
 WHERE NOT EXISTS (
   SELECT 1 FROM images
   WHERE scope = $7 AND project_id IS NOT DISTINCT FROM $2 AND lower(name) = lower($3)
 )
 ON CONFLICT (id) DO NOTHING
-RETURNING `+imageSelectColumns, id, projectID, input.Name, input.OSType, input.SourceURL, input.VirtualSizeBytes, scope).
+RETURNING `+imageSelectColumns, id, projectID, input.Name, input.OSType, input.SourceURL, input.VirtualSizeBytes, scope, status, cacheVolume, cacheStatus).
 		Scan(imageColumns(&image)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Image{}, ErrImageNameTaken
@@ -160,11 +166,11 @@ SELECT
 }
 
 // imageSelectColumns is the column list imageColumns scans. A public image has no project; it reads as "".
-const imageSelectColumns = "id, COALESCE(project_id, ''), name, os_type, source_url, status, created_at, virtual_size_bytes, scope"
+const imageSelectColumns = "id, COALESCE(project_id, ''), name, os_type, source_url, status, created_at, virtual_size_bytes, scope, COALESCE(cache_volume, ''), cache_status, status_message"
 
 // imageColumns lists scan targets in the order of imageSelectColumns.
 func imageColumns(image *domain.Image) []any {
-	return []any{&image.ID, &image.ProjectID, &image.Name, &image.OSType, &image.SourceURL, &image.Status, &image.CreatedAt, &image.VirtualSizeBytes, &image.Scope}
+	return []any{&image.ID, &image.ProjectID, &image.Name, &image.OSType, &image.SourceURL, &image.Status, &image.CreatedAt, &image.VirtualSizeBytes, &image.Scope, &image.CacheVolume, &image.CacheStatus, &image.StatusMessage}
 }
 
 func scanImage(row pgx.Row, image *domain.Image) error {
@@ -208,4 +214,36 @@ WHERE virtual_size_bytes IS NULL`)
 		images = append(images, image)
 	}
 	return images, rows.Err()
+}
+
+// ListImagesNeedingCache returns images of known size whose cache is still to be built: newly registered
+// (Pending), importing, or Ready images from before caching existed. Failed caches are not retried.
+func (p *Postgres) ListImagesNeedingCache(ctx context.Context) ([]domain.Image, error) {
+	rows, err := p.pool.Query(ctx, `
+SELECT `+imageSelectColumns+`
+FROM images
+WHERE virtual_size_bytes IS NOT NULL
+  AND (cache_status IN ('Pending', 'Importing') OR (cache_status = '' AND status = 'Ready'))
+ORDER BY created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var images []domain.Image
+	for rows.Next() {
+		var image domain.Image
+		if err := scanImage(rows, &image); err != nil {
+			return nil, err
+		}
+		images = append(images, image)
+	}
+	return images, rows.Err()
+}
+
+// SetImageCacheState records the image cache reconciler's view of an image.
+func (p *Postgres) SetImageCacheState(ctx context.Context, imageID string, state domain.ImageCacheState) error {
+	_, err := p.pool.Exec(ctx, `
+UPDATE images SET cache_volume = NULLIF($2, ''), cache_status = $3, status = $4, status_message = $5 WHERE id = $1`,
+		imageID, state.CacheVolume, state.CacheStatus, state.Status, state.StatusMessage)
+	return err
 }

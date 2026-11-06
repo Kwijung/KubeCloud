@@ -130,6 +130,14 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
+-- An image of known size is imported into the cluster once (cache_volume, a DataVolume) and VMs clone it.
+ALTER TABLE images
+  ADD COLUMN IF NOT EXISTS cache_volume text;
+ALTER TABLE images
+  ADD COLUMN IF NOT EXISTS cache_status text NOT NULL DEFAULT '';
+ALTER TABLE images
+  ADD COLUMN IF NOT EXISTS status_message text NOT NULL DEFAULT '';
+
 -- The Ubuntu seed image was seeded as Importing, a state nothing ever moved it out of. Images are Ready when
 -- registered; CDI downloads them per VM.
 UPDATE images SET status = 'Ready' WHERE id = 'data-ubuntu-22' AND status = 'Importing';

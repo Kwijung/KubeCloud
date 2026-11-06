@@ -21,6 +21,10 @@ rules:
   - apiGroups: ["cdi.kubevirt.io"]
     resources: ["datavolumes"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # VM disks are cloned from image cache DataVolumes; CDI checks that the cloner may read the source.
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datavolumes/source"]
+    verbs: ["create"]
   - apiGroups: ["kubeovn.io"]
     resources: ["vpcs", "subnets", "vpc-nat-gateways", "iptables-eips", "iptables-snat-rules"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

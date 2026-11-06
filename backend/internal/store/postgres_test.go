@@ -700,3 +700,73 @@ VALUES ('large', 'Large', 4, 4294967296, 21474836480, true) ON CONFLICT DO NOTHI
 		}
 	}
 }
+
+func TestPostgresImageCacheStates(t *testing.T) {
+	databaseURL := os.Getenv("KLOUDIA_STORE_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("KLOUDIA_STORE_TEST_DATABASE_URL is required for store integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	db, err := NewPostgres(databaseURL)
+	if err != nil {
+		t.Fatalf("new postgres: %v", err)
+	}
+	defer db.Close()
+	if err := db.ApplySchema(ctx); err != nil {
+		t.Fatalf("apply schema: %v", err)
+	}
+	size := int64(117440512)
+
+	cached, err := db.CreatePublicImage(ctx, domain.CreateImageInput{Name: "Cached CirrOS", OSType: "linux", SourceURL: "https://example.com/c.img", VirtualSizeBytes: &size, Cache: true})
+	if err != nil {
+		t.Fatalf("create cached image: %v", err)
+	}
+	defer func() { _ = db.DeletePublicImage(ctx, cached.ID) }()
+	if cached.Status != "Importing" || cached.CacheStatus != domain.ImageCachePending || cached.CacheVolume != "image-public-cached-cirros" {
+		t.Fatalf("a cached image starts Importing with a pending cache, got %#v", cached)
+	}
+	unsized, err := db.CreatePublicImage(ctx, domain.CreateImageInput{Name: "Raw Image", OSType: "linux", SourceURL: "https://example.com/r.raw", Cache: true})
+	if err != nil {
+		t.Fatalf("create unsized image: %v", err)
+	}
+	defer func() { _ = db.DeletePublicImage(ctx, unsized.ID) }()
+	if unsized.Status != "Ready" || unsized.CacheStatus != "" {
+		t.Fatalf("an image of unknown size cannot be cached and is Ready at once, got %#v", unsized)
+	}
+
+	// A VM cannot use the image until its cache is ready.
+	if _, err := db.CreateVirtualMachine(ctx, "platform", domain.CreateVirtualMachineInput{Name: "cache-early", ImageID: cached.ID, FlavorID: "small"}); !errors.Is(err, ErrImageNotReady) {
+		t.Fatalf("expected ErrImageNotReady while importing, got %v", err)
+	}
+
+	needing, err := db.ListImagesNeedingCache(ctx)
+	if err != nil {
+		t.Fatalf("list images needing cache: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, img := range needing {
+		ids[img.ID] = true
+	}
+	if !ids[cached.ID] || ids[unsized.ID] {
+		t.Fatalf("expected the cached image and not the unsized one, got %v", ids)
+	}
+
+	if err := db.SetImageCacheState(ctx, cached.ID, domain.ImageCacheState{CacheVolume: cached.CacheVolume, CacheStatus: domain.ImageCacheReady, Status: "Ready"}); err != nil {
+		t.Fatalf("set cache state: %v", err)
+	}
+	plan, err := db.CreateVirtualMachine(ctx, "platform", domain.CreateVirtualMachineInput{Name: "cache-user", ImageID: cached.ID, FlavorID: "small"})
+	if err != nil {
+		t.Fatalf("create vm from a ready image: %v", err)
+	}
+	defer func() { _ = db.DeleteVirtualMachine(ctx, "platform", "platform-cache-user") }()
+	if plan.Image.CacheStatus != domain.ImageCacheReady || plan.Image.CacheVolume != "image-public-cached-cirros" {
+		t.Fatalf("the provisioning plan must carry the cache, got %#v", plan.Image)
+	}
+	needing, _ = db.ListImagesNeedingCache(ctx)
+	for _, img := range needing {
+		if img.ID == cached.ID {
+			t.Fatal("a ready cache needs nothing more")
+		}
+	}
+}
