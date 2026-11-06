@@ -21,6 +21,8 @@ type Config struct {
 	// ReservedCIDRs is a comma-separated list of ranges VPC CIDRs must not overlap: the cluster's pod,
 	// service and kube-ovn internal ranges, plus the node network when NAT egress uses it.
 	ReservedCIDRs string
+	// VMDNSServers is a comma-separated list of DNS server IPs for VMs attached to a VPC subnet.
+	VMDNSServers string
 }
 
 func Load() Config {
@@ -36,6 +38,7 @@ func Load() Config {
 		NetworkProvisioningEnabled: env("KLOUDIA_NETWORK_PROVISIONING_ENABLED", "false") == "true",
 		OVNExternalNetwork:         env("KLOUDIA_OVN_EXTERNAL_NETWORK", "ovn-vpc-external-network"),
 		// Defaults: Cilium pod CIDR, Kubernetes service CIDR, kube-ovn default and join subnets.
+		VMDNSServers:  env("KLOUDIA_VM_DNS_SERVERS", ""),
 		ReservedCIDRs: env("KLOUDIA_RESERVED_CIDRS", "10.244.0.0/16,10.96.0.0/12,10.16.0.0/16,100.64.0.0/16"),
 	}
 }
@@ -55,6 +58,23 @@ func (c Config) ReservedPrefixes() ([]netip.Prefix, error) {
 		prefixes = append(prefixes, prefix.Masked())
 	}
 	return prefixes, nil
+}
+
+// VMDNSServerList parses VMDNSServers.
+func (c Config) VMDNSServerList() ([]string, error) {
+	var servers []string
+	for _, raw := range strings.Split(c.VMDNSServers, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		addr, err := netip.ParseAddr(raw)
+		if err != nil {
+			return nil, fmt.Errorf("KLOUDIA_VM_DNS_SERVERS: invalid ip %q: %w", raw, err)
+		}
+		servers = append(servers, addr.String())
+	}
+	return servers, nil
 }
 
 func env(key string, fallback string) string {

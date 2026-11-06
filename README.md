@@ -75,7 +75,13 @@ KLOUDIA_OVN_EXTERNAL_NETWORK=ovn-vpc-external-network
 # Ranges a VPC CIDR must not overlap. The default covers the Cilium pod, service and kube-ovn
 # internal ranges; add the node network when NAT egress uses it.
 KLOUDIA_RESERVED_CIDRS=10.244.0.0/16,10.96.0.0/12,10.16.0.0/16,100.64.0.0/16
+# DNS servers for VMs on a VPC subnet. A VPC cannot reach the cluster DNS service, so set a resolver the
+# VPC can reach (through the NAT gateway for public subnets). Empty keeps the cluster DNS.
+KLOUDIA_VM_DNS_SERVERS=10.0.0.2
 ```
+
+A VM on a subnet uses that subnet as its only NIC and as the launcher pod's default network, so the guest
+gets the subnet gateway as its default route over DHCP.
 
 A VPC takes a private CIDR from /16 to /28 (inside 10.0.0.0/8, 172.16.0.0/12 or 192.168.0.0/16)
 that must not overlap `KLOUDIA_RESERVED_CIDRS`; its subnets must fall inside it.

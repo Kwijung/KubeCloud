@@ -44,6 +44,11 @@ func main() {
 			log.Fatalf("kubevirt console streamer setup failed: %v", err)
 		}
 		provisioner := kubevirt.NewProvisioner(cfg.KubeVirtNamespace, cfg.KubeVirtStorageClassName, applier)
+		vmDNSServers, err := cfg.VMDNSServerList()
+		if err != nil {
+			log.Fatalf("config: %v", err)
+		}
+		provisioner.SetSubnetDNSServers(vmDNSServers)
 		deps := httpapi.Dependencies{
 			Version:         cfg.Version,
 			Store:           db,

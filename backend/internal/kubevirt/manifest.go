@@ -156,11 +156,15 @@ func sanitizeCloudInitLine(value string) string {
 
 func applyMultusNetwork(vm map[string]any, namespace string, subnet domain.Subnet) {
 	templateSpec := vm["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+	// default: the subnet replaces the cluster pod network as the launcher pod's eth0. KubeVirt's DHCP only
+	// hands the guest a gateway for the default network; as a secondary network the VM would get no route
+	// out of its own subnet.
 	templateSpec["networks"] = []any{
 		map[string]any{
 			"name": "net1",
 			"multus": map[string]any{
 				"networkName": namespace + "/" + subnet.NADName,
+				"default":     true,
 			},
 		},
 	}
@@ -171,6 +175,17 @@ func applyMultusNetwork(vm map[string]any, namespace string, subnet domain.Subne
 			"bridge": map[string]any{},
 		},
 	}
+}
+
+// applyDNSServers replaces the launcher pod's resolv.conf, which KubeVirt passes to the guest over DHCP.
+func applyDNSServers(vm map[string]any, servers []string) {
+	templateSpec := vm["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+	nameservers := make([]any, 0, len(servers))
+	for _, server := range servers {
+		nameservers = append(nameservers, server)
+	}
+	templateSpec["dnsPolicy"] = "None"
+	templateSpec["dnsConfig"] = map[string]any{"nameservers": nameservers}
 }
 
 func BuildDeleteResources(namespace string, vm domain.VirtualMachine) Resources {

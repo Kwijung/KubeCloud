@@ -151,6 +151,11 @@ func TestBuildResourcesAddsMultusNICWhenSubnetPresent(t *testing.T) {
 	if multus["networkName"] != "kloudia-vms/kloudia-net-platform-app-web" {
 		t.Fatalf("expected multus networkName, got %#v", multus["networkName"])
 	}
+	// The subnet must be the pod's default network: KubeVirt only hands the gateway to the guest over DHCP
+	// for the default network, so a secondary attachment leaves the VM without a default route.
+	if multus["default"] != true {
+		t.Fatalf("expected multus default network, got %#v", multus["default"])
+	}
 	ifaces := templateSpec["domain"].(map[string]any)["devices"].(map[string]any)["interfaces"].([]any)
 	if len(ifaces) != 1 {
 		t.Fatalf("expected one interface, got %#v", ifaces)

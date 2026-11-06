@@ -44,3 +44,19 @@ func TestReservedPrefixesParsesEnvAndRejectsGarbage(t *testing.T) {
 		t.Fatal("expected an error for an invalid reserved cidr")
 	}
 }
+
+func TestLoadParsesVMDNSServers(t *testing.T) {
+	t.Setenv("KLOUDIA_VM_DNS_SERVERS", " 10.0.0.2 , 8.8.8.8,")
+	cfg := Load()
+	servers, err := cfg.VMDNSServerList()
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(servers) != 2 || servers[0] != "10.0.0.2" || servers[1] != "8.8.8.8" {
+		t.Fatalf("unexpected servers: %#v", servers)
+	}
+	t.Setenv("KLOUDIA_VM_DNS_SERVERS", "dns.example.com")
+	if _, err := Load().VMDNSServerList(); err == nil {
+		t.Fatalf("expected error for a non-IP DNS server")
+	}
+}
