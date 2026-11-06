@@ -2,6 +2,7 @@ package kubevirt
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -93,6 +94,35 @@ func (a *DynamicApplier) Delete(ctx context.Context, resource map[string]any) er
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
+	return err
+}
+
+func (a *DynamicApplier) Patch(ctx context.Context, resource map[string]any) error {
+	if a == nil || a.client == nil {
+		return fmt.Errorf("dynamic client is not configured")
+	}
+	gvr, namespaced, err := resourceMapping(resource)
+	if err != nil {
+		return err
+	}
+	obj := &unstructured.Unstructured{Object: resource}
+	name := obj.GetName()
+	if name == "" {
+		return fmt.Errorf("resource %s requires metadata.name", gvr.Resource)
+	}
+	var resourceClient dynamic.ResourceInterface = a.client.Resource(gvr)
+	if namespaced {
+		namespace := obj.GetNamespace()
+		if namespace == "" {
+			return fmt.Errorf("resource %s requires metadata.namespace", gvr.Resource)
+		}
+		resourceClient = a.client.Resource(gvr).Namespace(namespace)
+	}
+	patch, err := json.Marshal(resource)
+	if err != nil {
+		return err
+	}
+	_, err = resourceClient.Patch(ctx, name, types.MergePatchType, patch, v1.PatchOptions{})
 	return err
 }
 

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
+	"net/netip"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
@@ -17,18 +19,28 @@ type Store interface {
 	ListProjects(ctx context.Context) ([]domain.Project, error)
 	ListFlavors(ctx context.Context) ([]domain.Flavor, error)
 	ListImages(ctx context.Context, projectID string) ([]domain.Image, error)
+	CreateImage(ctx context.Context, projectID string, input domain.CreateImageInput) (domain.Image, error)
+	DeleteImage(ctx context.Context, projectID string, imageID string) error
+	ListPublicImages(ctx context.Context) ([]domain.Image, error)
+	CreatePublicImage(ctx context.Context, input domain.CreateImageInput) (domain.Image, error)
+	DeletePublicImage(ctx context.Context, imageID string) error
 	ListVirtualMachines(ctx context.Context, projectID string) ([]domain.VirtualMachine, error)
 	CreateVirtualMachine(ctx context.Context, projectID string, input domain.CreateVirtualMachineInput) (domain.VirtualMachineProvisioningPlan, error)
 	GetVirtualMachine(ctx context.Context, projectID string, vmID string) (domain.VirtualMachine, error)
 	DeleteVirtualMachine(ctx context.Context, projectID string, vmID string) error
 	ListNetworks(ctx context.Context, projectID string) ([]domain.Network, error)
 	GetNetwork(ctx context.Context, projectID string, networkID string) (domain.Network, error)
-	CreateNetwork(ctx context.Context, projectID string, name string) (domain.Network, error)
+	CreateNetwork(ctx context.Context, projectID string, name string, cidr string) (domain.Network, error)
 	DeleteNetwork(ctx context.Context, projectID string, networkID string) (domain.Network, error)
 	ListSubnets(ctx context.Context, projectID string, networkID string) ([]domain.Subnet, error)
 	GetSubnet(ctx context.Context, projectID string, subnetID string) (domain.Subnet, error)
 	CreateSubnet(ctx context.Context, projectID string, networkID string, name string, cidr string, subnetType string, gateway string) (domain.Subnet, error)
 	DeleteSubnet(ctx context.Context, projectID string, subnetID string) (domain.Subnet, error)
+}
+
+// ImageProber reads an image's virtual disk size from its URL.
+type ImageProber interface {
+	VirtualSize(ctx context.Context, url string) (int64, error)
 }
 
 type Provisioner interface {
@@ -96,16 +108,55 @@ func (noopConsoleStreamer) StreamVirtualMachineConsole(http.ResponseWriter, *htt
 type NetworkProvisioner interface {
 	CreateNetwork(ctx context.Context, network domain.Network) error
 	DeleteNetwork(ctx context.Context, network domain.Network) error
-	CreateSubnet(ctx context.Context, ovnVPCName string, subnet domain.Subnet) error
-	DeleteSubnet(ctx context.Context, ovnVPCName string, subnet domain.Subnet) error
+	// publicSubnets are the VPC's public subnets including the new one; they drive the shared NAT gateway and egress routes.
+	CreateSubnet(ctx context.Context, ovnVPCName string, subnet domain.Subnet, publicSubnets []domain.Subnet) error
+	// remainingPublicSubnets are the VPC's public subnets left once this one is deleted.
+	DeleteSubnet(ctx context.Context, ovnVPCName string, subnet domain.Subnet, remainingPublicSubnets []domain.Subnet) error
 }
 
 type noopNetworkProvisioner struct{}
 
-func (noopNetworkProvisioner) CreateNetwork(context.Context, domain.Network) error       { return nil }
-func (noopNetworkProvisioner) DeleteNetwork(context.Context, domain.Network) error       { return nil }
-func (noopNetworkProvisioner) CreateSubnet(context.Context, string, domain.Subnet) error { return nil }
-func (noopNetworkProvisioner) DeleteSubnet(context.Context, string, domain.Subnet) error { return nil }
+func (noopNetworkProvisioner) CreateNetwork(context.Context, domain.Network) error { return nil }
+func (noopNetworkProvisioner) DeleteNetwork(context.Context, domain.Network) error { return nil }
+func (noopNetworkProvisioner) CreateSubnet(context.Context, string, domain.Subnet, []domain.Subnet) error {
+	return nil
+}
+func (noopNetworkProvisioner) DeleteSubnet(context.Context, string, domain.Subnet, []domain.Subnet) error {
+	return nil
+}
+
+// overlappingReservedCIDR returns the first reserved range that cidr overlaps.
+func overlappingReservedCIDR(cidr string, reserved []netip.Prefix) (string, bool) {
+	prefix, err := netip.ParsePrefix(cidr)
+	if err != nil {
+		return "", false
+	}
+	for _, r := range reserved {
+		if r.Overlaps(prefix) {
+			return r.String(), true
+		}
+	}
+	return "", false
+}
+
+// publicSubnetsOf lists the public subnets in subnet's VPC, leaving out excludeID. Private subnets do not
+// touch the NAT gateway, so they get nil without a lookup.
+func publicSubnetsOf(ctx context.Context, store Store, subnet domain.Subnet, excludeID string) ([]domain.Subnet, error) {
+	if subnet.Type != "public" {
+		return nil, nil
+	}
+	subnets, err := store.ListSubnets(ctx, subnet.ProjectID, subnet.NetworkID)
+	if err != nil {
+		return nil, err
+	}
+	var public []domain.Subnet
+	for _, s := range subnets {
+		if s.Type == "public" && s.ID != excludeID {
+			public = append(public, s)
+		}
+	}
+	return public, nil
+}
 
 type Dependencies struct {
 	Version            string
@@ -114,6 +165,10 @@ type Dependencies struct {
 	StatusReader       StatusReader
 	ConsoleStreamer    ConsoleStreamer
 	NetworkProvisioner NetworkProvisioner
+	// ReservedCIDRs are ranges a VPC CIDR must not overlap (cluster pod/service/kube-ovn ranges).
+	ReservedCIDRs []netip.Prefix
+	// ImageProber reads image sizes at registration; nil skips it.
+	ImageProber ImageProber
 }
 
 func NewRouter(version string, store Store) http.Handler {
@@ -159,7 +214,7 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 	}
 	router := chi.NewRouter()
 	router.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:5173"},
+		AllowedOrigins:   []string{"http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:5173", "http://127.0.0.1:5174"},
 		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		AllowCredentials: true,
@@ -223,6 +278,40 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 		writeJSON(w, http.StatusOK, map[string]any{"data": images})
 	})
 
+	router.Post("/api/v1/projects/{projectID}/images", func(w http.ResponseWriter, r *http.Request) {
+		projectID := chi.URLParam(r, "projectID")
+		createImage(w, r, deps.ImageProber, func(ctx context.Context, input domain.CreateImageInput) (domain.Image, error) {
+			return store.CreateImage(ctx, projectID, input)
+		})
+	})
+
+	// A public image is not deletable here: DeleteImage only matches the project's own images.
+	router.Delete("/api/v1/projects/{projectID}/images/{imageID}", func(w http.ResponseWriter, r *http.Request) {
+		imageID := chi.URLParam(r, "imageID")
+		writeImageDeleteResult(w, imageID, store.DeleteImage(r.Context(), chi.URLParam(r, "projectID"), imageID))
+	})
+
+	// Public images. These admin routes are unauthenticated until accounts and roles land; then only the
+	// admin role may call them.
+	router.Get("/api/v1/admin/images", func(w http.ResponseWriter, r *http.Request) {
+		images, err := store.ListPublicImages(r.Context())
+		if err != nil {
+			log.Printf("list public images: %v", err)
+			writeError(w, http.StatusInternalServerError, "IMAGES_UNAVAILABLE", "failed to list public images")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": images})
+	})
+
+	router.Post("/api/v1/admin/images", func(w http.ResponseWriter, r *http.Request) {
+		createImage(w, r, deps.ImageProber, store.CreatePublicImage)
+	})
+
+	router.Delete("/api/v1/admin/images/{imageID}", func(w http.ResponseWriter, r *http.Request) {
+		imageID := chi.URLParam(r, "imageID")
+		writeImageDeleteResult(w, imageID, store.DeletePublicImage(r.Context(), imageID))
+	})
+
 	router.Get("/api/v1/projects/{projectID}/vms", func(w http.ResponseWriter, r *http.Request) {
 		vms, err := store.ListVirtualMachines(r.Context(), chi.URLParam(r, "projectID"))
 		if err != nil {
@@ -249,15 +338,17 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			writeError(w, http.StatusInternalServerError, "VM_DETAIL_UNAVAILABLE", "failed to read virtual machine detail")
 			return
 		}
+		attachVirtualMachineNetwork(r.Context(), store, vm, &detail)
 		writeJSON(w, http.StatusOK, map[string]any{"data": detail})
 	})
 
 	router.Post("/api/v1/projects/{projectID}/vms", func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
-			Name     string `json:"name"`
-			ImageID  string `json:"imageId"`
-			FlavorID string `json:"flavorId"`
-			SubnetID string `json:"subnetId"`
+			Name      string                  `json:"name"`
+			ImageID   string                  `json:"imageId"`
+			FlavorID  string                  `json:"flavorId"`
+			SubnetID  string                  `json:"subnetId"`
+			CloudInit *domain.CloudInitConfig `json:"cloudInit"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "request body must be valid JSON")
@@ -268,21 +359,33 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			return
 		}
 		plan, err := store.CreateVirtualMachine(r.Context(), chi.URLParam(r, "projectID"), domain.CreateVirtualMachineInput{
-			Name:     request.Name,
-			ImageID:  request.ImageID,
-			FlavorID: request.FlavorID,
-			SubnetID: request.SubnetID,
+			Name:      request.Name,
+			ImageID:   request.ImageID,
+			FlavorID:  request.FlavorID,
+			SubnetID:  request.SubnetID,
+			CloudInit: request.CloudInit,
 		})
 		if err != nil {
-			if errors.Is(err, storepkg.ErrNotFound) {
+			switch {
+			case errors.Is(err, storepkg.ErrNotFound):
 				writeError(w, http.StatusBadRequest, "INVALID_SUBNET", "subnetId not found in this project")
-				return
+			case errors.Is(err, storepkg.ErrImageNotFound):
+				writeError(w, http.StatusBadRequest, "INVALID_IMAGE", "imageId not found in this project")
+			case errors.Is(err, storepkg.ErrImageNotReady):
+				writeError(w, http.StatusConflict, "IMAGE_NOT_READY", "image has not finished importing")
+			case errors.Is(err, storepkg.ErrFlavorNotFound):
+				writeError(w, http.StatusBadRequest, "INVALID_FLAVOR", "flavorId not found or disabled")
+			case errors.Is(err, storepkg.ErrFlavorDiskTooSmall):
+				writeError(w, http.StatusBadRequest, "FLAVOR_DISK_TOO_SMALL", "the flavor's root disk is smaller than the image; pick a larger flavor")
+			default:
+				log.Printf("create virtual machine %q in project %s: %v", request.Name, chi.URLParam(r, "projectID"), err)
+				writeError(w, http.StatusInternalServerError, "VM_CREATE_FAILED", "failed to create virtual machine")
 			}
-			writeError(w, http.StatusInternalServerError, "VM_CREATE_FAILED", "failed to create virtual machine")
 			return
 		}
 		if provisioner != nil {
 			if err := provisioner.CreateVirtualMachine(r.Context(), plan); err != nil {
+				log.Printf("provision virtual machine %s: %v", plan.VirtualMachine.ID, err)
 				writeError(w, http.StatusBadGateway, "VM_PROVISION_FAILED", "failed to provision virtual machine")
 				return
 			}
@@ -351,7 +454,7 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"data": map[string]any{
 				"available": detail.ConsoleAvailable && detail.RuntimeStatus == "Running",
-				"message":   "KubeVirt console subresource is available; browser streaming is not implemented yet",
+				"message":   "KubeVirt console streaming is available while the VM is running",
 			},
 		})
 	})
@@ -394,16 +497,26 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 		projectID := chi.URLParam(r, "projectID")
 		var request struct {
 			Name string `json:"name"`
+			CIDR string `json:"cidr"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "request body must be valid JSON")
 			return
 		}
-		if request.Name == "" {
-			writeError(w, http.StatusBadRequest, "INVALID_NETWORK_REQUEST", "name is required")
+		if request.Name == "" || request.CIDR == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_NETWORK_REQUEST", "name and cidr are required")
 			return
 		}
-		network, err := store.CreateNetwork(r.Context(), projectID, request.Name)
+		cidr, err := storepkg.NormalizeNetworkCIDR(request.CIDR)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "NETWORK_CIDR_INVALID", "vpc cidr must be a private ipv4 range from /16 to /28")
+			return
+		}
+		if reserved, ok := overlappingReservedCIDR(cidr, deps.ReservedCIDRs); ok {
+			writeError(w, http.StatusBadRequest, "NETWORK_CIDR_RESERVED", "vpc cidr overlaps the cluster range "+reserved)
+			return
+		}
+		network, err := store.CreateNetwork(r.Context(), projectID, request.Name, cidr)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "NETWORK_CREATE_FAILED", "failed to create network")
 			return
@@ -495,6 +608,8 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 				writeError(w, http.StatusNotFound, "NETWORK_NOT_FOUND", "network was not found")
 			case errors.Is(err, storepkg.ErrSubnetCIDRInvalid):
 				writeError(w, http.StatusBadRequest, "SUBNET_CIDR_INVALID", "subnet cidr is invalid")
+			case errors.Is(err, storepkg.ErrSubnetCIDROutsideNetwork):
+				writeError(w, http.StatusBadRequest, "SUBNET_CIDR_OUTSIDE_VPC", "subnet cidr must be inside the vpc cidr")
 			case errors.Is(err, storepkg.ErrSubnetCIDROverlap):
 				writeError(w, http.StatusConflict, "SUBNET_CIDR_OVERLAP", "subnet cidr overlaps an existing subnet in this vpc")
 			default:
@@ -502,7 +617,13 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			}
 			return
 		}
-		if err := networkProvisioner.CreateSubnet(r.Context(), network.OVNVPCName, subnet); err != nil {
+		publicSubnets, err := publicSubnetsOf(r.Context(), store, subnet, "")
+		if err != nil {
+			_, _ = store.DeleteSubnet(r.Context(), projectID, subnet.ID)
+			writeError(w, http.StatusInternalServerError, "SUBNET_CREATE_FAILED", "failed to create subnet")
+			return
+		}
+		if err := networkProvisioner.CreateSubnet(r.Context(), network.OVNVPCName, subnet, publicSubnets); err != nil {
 			_, _ = store.DeleteSubnet(r.Context(), projectID, subnet.ID)
 			writeError(w, http.StatusBadGateway, "SUBNET_PROVISION_FAILED", "failed to provision subnet")
 			return
@@ -536,18 +657,27 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			writeError(w, http.StatusNotFound, "SUBNET_NOT_FOUND", "subnet was not found")
 			return
 		}
+		// The store rejects deleting the NAT gateway anchor while other public subnets remain, so the
+		// gateway goes only with the VPC's last public subnet.
+		remainingPublicSubnets, err := publicSubnetsOf(r.Context(), store, subnet, subnet.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "SUBNET_DELETE_FAILED", "failed to delete subnet")
+			return
+		}
 		if _, err := store.DeleteSubnet(r.Context(), projectID, subnetID); err != nil {
 			switch {
 			case errors.Is(err, storepkg.ErrNotFound):
 				writeError(w, http.StatusNotFound, "SUBNET_NOT_FOUND", "subnet was not found")
 			case errors.Is(err, storepkg.ErrSubnetInUse):
 				writeError(w, http.StatusConflict, "SUBNET_IN_USE", "subnet still has virtual machines attached")
+			case errors.Is(err, storepkg.ErrSubnetHostsNATGateway):
+				writeError(w, http.StatusConflict, "SUBNET_HOSTS_NAT_GATEWAY", "subnet hosts the vpc nat gateway; delete the other public subnets first")
 			default:
 				writeError(w, http.StatusInternalServerError, "SUBNET_DELETE_FAILED", "failed to delete subnet")
 			}
 			return
 		}
-		if err := networkProvisioner.DeleteSubnet(r.Context(), network.OVNVPCName, subnet); err != nil {
+		if err := networkProvisioner.DeleteSubnet(r.Context(), network.OVNVPCName, subnet, remainingPublicSubnets); err != nil {
 			writeError(w, http.StatusBadGateway, "SUBNET_DEPROVISION_FAILED", "failed to delete subnet resources")
 			return
 		}
@@ -561,6 +691,26 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+// attachVirtualMachineNetwork fills in the subnet and VPC a VM is attached to. A lookup failure leaves them
+// empty instead of failing the detail view, since the runtime detail is still useful on its own.
+func attachVirtualMachineNetwork(ctx context.Context, store Store, vm domain.VirtualMachine, detail *domain.VirtualMachineDetail) {
+	if vm.SubnetID == "" {
+		return
+	}
+	subnet, err := store.GetSubnet(ctx, vm.ProjectID, vm.SubnetID)
+	if err != nil {
+		log.Printf("vm %s: read subnet %s: %v", vm.ID, vm.SubnetID, err)
+		return
+	}
+	detail.Subnet = &subnet
+	network, err := store.GetNetwork(ctx, vm.ProjectID, subnet.NetworkID)
+	if err != nil {
+		log.Printf("vm %s: read network %s: %v", vm.ID, subnet.NetworkID, err)
+		return
+	}
+	detail.Network = &network
 }
 
 func writeError(w http.ResponseWriter, status int, code string, message string) {

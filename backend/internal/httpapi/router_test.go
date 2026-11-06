@@ -47,3 +47,21 @@ func TestAPIHealthIncludesVersion(t *testing.T) {
 		t.Fatalf("expected version dev, got %q", body["version"])
 	}
 }
+
+func TestCORSAllowsAlternateViteDevPort(t *testing.T) {
+	router := NewRouter("dev", nil)
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/projects/platform/networks", nil)
+	req.Header.Set("Origin", "http://localhost:5174")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	req.Header.Set("Access-Control-Request-Headers", "content-type")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code < 200 || rec.Code >= 300 {
+		t.Fatalf("expected 2xx status, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5174" {
+		t.Fatalf("expected localhost:5174 allow origin, got %q", got)
+	}
+}

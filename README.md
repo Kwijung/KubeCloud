@@ -45,6 +45,16 @@ Catalog APIs:
 curl http://localhost:8080/api/v1/projects
 curl http://localhost:8080/api/v1/flavors
 curl http://localhost:8080/api/v1/projects/platform/images
+curl -X POST http://localhost:8080/api/v1/projects/platform/images \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Ubuntu 24.04","osType":"linux","sourceUrl":"https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"}'
+curl -X DELETE http://localhost:8080/api/v1/projects/platform/images/platform-ubuntu-24-04
+# Public images: every project can use them (no auth yet; admin-only once accounts land)
+curl http://localhost:8080/api/v1/admin/images
+curl -X POST http://localhost:8080/api/v1/admin/images \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Debian 12","osType":"linux","sourceUrl":"https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"}'
+curl -X DELETE http://localhost:8080/api/v1/admin/images/public-debian-12
 curl http://localhost:8080/api/v1/projects/platform/vms
 curl http://localhost:8080/api/v1/projects/platform/vms/platform-api-01
 curl -X POST http://localhost:8080/api/v1/projects/platform/vms \
@@ -53,11 +63,15 @@ curl -X POST http://localhost:8080/api/v1/projects/platform/vms \
 curl -X DELETE http://localhost:8080/api/v1/projects/platform/vms/platform-api-01
 curl http://localhost:8080/api/v1/projects/platform/networks
 curl -X POST http://localhost:8080/api/v1/projects/platform/networks \
-  -H 'Content-Type: application/json' -d '{"name":"app"}'
+  -H 'Content-Type: application/json' -d '{"name":"app","cidr":"10.20.0.0/16"}'
 curl -X POST http://localhost:8080/api/v1/projects/platform/networks/platform-app/subnets \
-  -H 'Content-Type: application/json' -d '{"name":"web","cidr":"10.0.0.0/24","type":"private"}'
+  -H 'Content-Type: application/json' -d '{"name":"web","cidr":"10.20.1.0/24","type":"private"}'
 curl http://localhost:8080/api/v1/projects/platform/networks/platform-app/subnets
 ```
+
+An image is a name plus an http(s) URL and is `Ready` as soon as it is registered: CDI downloads the URL
+into each VM's root disk when the VM is created, so the flavor's root disk must be larger than the image's
+virtual size. An image that VMs still use cannot be deleted (409 `IMAGE_IN_USE`).
 
 The VM create endpoint persists a VM record and prepares the KubeVirt/CDI resource
 model. Set `KLOUDIA_KUBEVIRT_ENABLED=true` to apply generated `DataVolume` and
@@ -72,7 +86,19 @@ KUBECONFIG=/home/cloudia/.kube/config
 KLOUDIA_KUBEVIRT_NAMESPACE=kloudia-vms
 KLOUDIA_KUBEVIRT_STORAGE_CLASS=test-delete
 KLOUDIA_OVN_EXTERNAL_NETWORK=ovn-vpc-external-network
+# Ranges a VPC CIDR must not overlap. The default covers the Cilium pod, service and kube-ovn
+# internal ranges; add the node network when NAT egress uses it.
+KLOUDIA_RESERVED_CIDRS=10.244.0.0/16,10.96.0.0/12,10.16.0.0/16,100.64.0.0/16
+# DNS servers for VMs on a VPC subnet. A VPC cannot reach the cluster DNS service, so set a resolver the
+# VPC can reach (through the NAT gateway for public subnets). Empty keeps the cluster DNS.
+KLOUDIA_VM_DNS_SERVERS=10.0.0.2
 ```
+
+A VM on a subnet uses that subnet as its only NIC and as the launcher pod's default network, so the guest
+gets the subnet gateway as its default route over DHCP.
+
+A VPC takes a private CIDR from /16 to /28 (inside 10.0.0.0/8, 172.16.0.0/12 or 192.168.0.0/16)
+that must not overlap `KLOUDIA_RESERVED_CIDRS`; its subnets must fall inside it.
 
 Subnets can be `private` (isolated) or `public` (outbound SNAT egress via a kube-ovn VPC NAT gateway). Public subnets require kube-ovn's VPC NAT gateway feature and an external provider network configured at the infra layer.
 

@@ -24,6 +24,7 @@ export type Network = {
   id: string;
   projectId: string;
   name: string;
+  cidr: string; // empty for VPCs created before VPC CIDRs existed
   status: string;
   createdAt: string;
 };
@@ -48,6 +49,9 @@ export type Image = {
   sourceUrl: string;
   status: string;
   createdAt: string;
+  scope: "public" | "project"; // public images come from an admin and every project can use them
+  virtualSizeBytes?: number; // missing when the size could not be read (non-qcow2 image)
+  minRootDiskBytes?: number; // smallest flavor root disk that holds the image
 };
 
 export type VirtualMachine = {
@@ -80,6 +84,8 @@ export type VirtualMachineDetail = {
   pvcPhase: string;
   pvcCapacity: string;
   consoleAvailable: boolean;
+  subnet?: Subnet;
+  network?: Network;
   events: RuntimeEvent[];
 };
 
@@ -99,6 +105,11 @@ export type CreateVirtualMachineRequest = {
   imageId: string;
   flavorId: string;
   subnetId?: string;
+  cloudInit?: {
+    username?: string;
+    password?: string;
+    sshPublicKey?: string;
+  };
 };
 
 type ListResponse<T> = {
@@ -126,14 +137,14 @@ export async function fetchNetworks(projectId: string): Promise<Network[]> {
   return response.data;
 }
 
-export async function createNetwork(projectId: string, name: string): Promise<Network> {
+export async function createNetwork(projectId: string, name: string, cidr: string): Promise<Network> {
   const response = await fetch(`${apiBaseUrl}/api/v1/projects/${projectId}/networks`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, cidr }),
   });
   if (!response.ok) {
-    throw new Error(`network create failed: ${response.status}`);
+    throw await apiError(response, "network create failed");
   }
   const body = (await response.json()) as { data: Network };
   return body.data;
@@ -144,7 +155,7 @@ export async function deleteNetwork(projectId: string, networkId: string): Promi
     method: "DELETE",
   });
   if (!response.ok) {
-    throw new Error(`network delete failed: ${response.status}`);
+    throw await apiError(response, "network delete failed");
   }
 }
 
@@ -169,7 +180,7 @@ export async function createSubnet(
     },
   );
   if (!response.ok) {
-    throw new Error(`subnet create failed: ${response.status}`);
+    throw await apiError(response, "subnet create failed");
   }
   const body = (await response.json()) as { data: Subnet };
   return body.data;
@@ -181,7 +192,33 @@ export async function deleteSubnet(projectId: string, networkId: string, subnetI
     { method: "DELETE" },
   );
   if (!response.ok) {
-    throw new Error(`subnet delete failed: ${response.status}`);
+    throw await apiError(response, "subnet delete failed");
+  }
+}
+
+export type CreateImageRequest = {
+  name: string;
+  osType: string;
+  sourceUrl: string;
+};
+
+export async function createImage(projectId: string, request: CreateImageRequest): Promise<Image> {
+  const response = await fetch(`${apiBaseUrl}/api/v1/projects/${projectId}/images`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  if (!response.ok) {
+    throw await apiError(response, "image create failed");
+  }
+  const body = (await response.json()) as { data: Image };
+  return body.data;
+}
+
+export async function deleteImage(projectId: string, imageId: string): Promise<void> {
+  const response = await fetch(`${apiBaseUrl}/api/v1/projects/${projectId}/images/${imageId}`, { method: "DELETE" });
+  if (!response.ok) {
+    throw await apiError(response, "image delete failed");
   }
 }
 
@@ -214,7 +251,7 @@ export async function createVirtualMachine(projectId: string, request: CreateVir
     body: JSON.stringify(request),
   });
   if (!response.ok) {
-    throw new Error(`vm create failed: ${response.status}`);
+    throw await apiError(response, "vm create failed");
   }
   const body = (await response.json()) as { data: VirtualMachine };
   return body.data;
@@ -257,6 +294,25 @@ async function postAction(path: string): Promise<void> {
   const response = await fetch(`${apiBaseUrl}${path}`, { method: "POST" });
   if (!response.ok) {
     throw new Error(`api action failed: ${response.status}`);
+  }
+}
+
+// ApiError carries the backend's error code (e.g. SUBNET_CIDR_OVERLAP) so the UI can explain the failure.
+export class ApiError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+async function apiError(response: Response, action: string): Promise<ApiError> {
+  try {
+    const body = (await response.json()) as { error?: { code?: string; message?: string } };
+    return new ApiError(body.error?.code ?? "", body.error?.message ?? `${action}: ${response.status}`);
+  } catch {
+    return new ApiError("", `${action}: ${response.status}`);
   }
 }
 

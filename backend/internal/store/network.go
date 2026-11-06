@@ -13,10 +13,16 @@ import (
 var (
 	// ErrSubnetCIDRInvalid is returned when a subnet CIDR cannot be parsed.
 	ErrSubnetCIDRInvalid = errors.New("subnet cidr is invalid")
+	// ErrSubnetCIDROutsideNetwork is returned when a subnet CIDR is not inside its VPC's CIDR.
+	ErrSubnetCIDROutsideNetwork = errors.New("subnet cidr is outside the vpc cidr")
+	// ErrNetworkCIDRInvalid is returned when a VPC CIDR is malformed, not private, or not a /16 to /28.
+	ErrNetworkCIDRInvalid = errors.New("vpc cidr must be a private ipv4 range from /16 to /28")
 	// ErrSubnetCIDROverlap is returned when a subnet CIDR overlaps another subnet in the same VPC.
 	ErrSubnetCIDROverlap = errors.New("subnet cidr overlaps an existing subnet in the same vpc")
 	// ErrSubnetInUse is returned when deleting a subnet that still has VMs attached.
 	ErrSubnetInUse = errors.New("subnet still has virtual machines attached")
+	// ErrSubnetHostsNATGateway is returned when deleting the public subnet that hosts the VPC NAT gateway while other public subnets still depend on it.
+	ErrSubnetHostsNATGateway = errors.New("subnet hosts the vpc nat gateway used by other public subnets")
 	// ErrNetworkInUse is returned when deleting a VPC that still has subnets.
 	ErrNetworkInUse = errors.New("network still has subnets")
 	// ErrNotFound is returned when a network or subnet does not exist.
@@ -30,6 +36,50 @@ func normalizeCIDR(cidr string) (string, error) {
 		return "", ErrSubnetCIDRInvalid
 	}
 	return prefix.Masked().String(), nil
+}
+
+// privateRanges are the RFC 1918 blocks a VPC CIDR must fall in.
+var privateRanges = []netip.Prefix{
+	netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.168.0.0/16"),
+}
+
+// VPC CIDR size limits, as in AWS VPCs.
+const (
+	minNetworkPrefixBits = 16
+	maxNetworkPrefixBits = 28
+)
+
+// NormalizeNetworkCIDR validates a VPC CIDR and returns its canonical masked form.
+func NormalizeNetworkCIDR(cidr string) (string, error) {
+	prefix, err := netip.ParsePrefix(strings.TrimSpace(cidr))
+	if err != nil || !prefix.Addr().Is4() {
+		return "", ErrNetworkCIDRInvalid
+	}
+	if prefix.Bits() < minNetworkPrefixBits || prefix.Bits() > maxNetworkPrefixBits {
+		return "", ErrNetworkCIDRInvalid
+	}
+	prefix = prefix.Masked()
+	for _, private := range privateRanges {
+		if cidrContains(private.String(), prefix.String()) {
+			return prefix.String(), nil
+		}
+	}
+	return "", ErrNetworkCIDRInvalid
+}
+
+// cidrContains reports whether inner lies entirely inside outer. Invalid inputs are treated as not contained.
+func cidrContains(outer, inner string) bool {
+	po, err := netip.ParsePrefix(outer)
+	if err != nil {
+		return false
+	}
+	pi, err := netip.ParsePrefix(inner)
+	if err != nil {
+		return false
+	}
+	return po.Bits() <= pi.Bits() && po.Masked().Contains(pi.Masked().Addr())
 }
 
 // defaultGateway returns the first usable host address of a CIDR (network address + 1).
@@ -66,7 +116,7 @@ func makeResourceID(parts ...string) string {
 
 func (p *Postgres) ListNetworks(ctx context.Context, projectID string) ([]domain.Network, error) {
 	rows, err := p.pool.Query(ctx, `
-SELECT id, project_id, name, ovn_vpc_name, status, created_at
+SELECT id, project_id, name, COALESCE(cidr, ''), ovn_vpc_name, status, created_at
 FROM networks
 WHERE project_id = $1
 ORDER BY created_at DESC, name`, projectID)
@@ -78,7 +128,7 @@ ORDER BY created_at DESC, name`, projectID)
 	var networks []domain.Network
 	for rows.Next() {
 		var n domain.Network
-		if err := rows.Scan(&n.ID, &n.ProjectID, &n.Name, &n.OVNVPCName, &n.Status, &n.CreatedAt); err != nil {
+		if err := rows.Scan(&n.ID, &n.ProjectID, &n.Name, &n.CIDR, &n.OVNVPCName, &n.Status, &n.CreatedAt); err != nil {
 			return nil, err
 		}
 		networks = append(networks, n)
@@ -89,29 +139,33 @@ ORDER BY created_at DESC, name`, projectID)
 func (p *Postgres) GetNetwork(ctx context.Context, projectID string, networkID string) (domain.Network, error) {
 	var n domain.Network
 	err := p.pool.QueryRow(ctx, `
-SELECT id, project_id, name, ovn_vpc_name, status, created_at
+SELECT id, project_id, name, COALESCE(cidr, ''), ovn_vpc_name, status, created_at
 FROM networks
 WHERE project_id = $1 AND id = $2`, projectID, networkID).
-		Scan(&n.ID, &n.ProjectID, &n.Name, &n.OVNVPCName, &n.Status, &n.CreatedAt)
+		Scan(&n.ID, &n.ProjectID, &n.Name, &n.CIDR, &n.OVNVPCName, &n.Status, &n.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Network{}, ErrNotFound
 	}
 	return n, err
 }
 
-func (p *Postgres) CreateNetwork(ctx context.Context, projectID string, name string) (domain.Network, error) {
+func (p *Postgres) CreateNetwork(ctx context.Context, projectID string, name string, cidr string) (domain.Network, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return domain.Network{}, errors.New("network name is required")
 	}
+	canonicalCIDR, err := NormalizeNetworkCIDR(cidr)
+	if err != nil {
+		return domain.Network{}, err
+	}
 	id := makeResourceID(projectID, name)
 	ovnVPCName := "kloudia-vpc-" + id
 	var n domain.Network
-	err := p.pool.QueryRow(ctx, `
-INSERT INTO networks (id, project_id, name, ovn_vpc_name, status)
-VALUES ($1, $2, $3, $4, 'Ready')
-RETURNING id, project_id, name, ovn_vpc_name, status, created_at`, id, projectID, name, ovnVPCName).
-		Scan(&n.ID, &n.ProjectID, &n.Name, &n.OVNVPCName, &n.Status, &n.CreatedAt)
+	err = p.pool.QueryRow(ctx, `
+INSERT INTO networks (id, project_id, name, cidr, ovn_vpc_name, status)
+VALUES ($1, $2, $3, $4, $5, 'Ready')
+RETURNING id, project_id, name, cidr, ovn_vpc_name, status, created_at`, id, projectID, name, canonicalCIDR, ovnVPCName).
+		Scan(&n.ID, &n.ProjectID, &n.Name, &n.CIDR, &n.OVNVPCName, &n.Status, &n.CreatedAt)
 	return n, err
 }
 
@@ -175,14 +229,17 @@ func (p *Postgres) CreateSubnet(ctx context.Context, projectID string, networkID
 	defer tx.Rollback(ctx)
 
 	// Lock the parent network row to serialize concurrent subnet creation within the same VPC.
-	var networkID2 string
+	var networkCIDR string
 	if err := tx.QueryRow(ctx, `
-SELECT id FROM networks WHERE project_id = $1 AND id = $2
-FOR UPDATE`, projectID, networkID).Scan(&networkID2); err != nil {
+SELECT COALESCE(cidr, '') FROM networks WHERE project_id = $1 AND id = $2
+FOR UPDATE`, projectID, networkID).Scan(&networkCIDR); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.Subnet{}, ErrNotFound
 		}
 		return domain.Subnet{}, err
+	}
+	if networkCIDR != "" && !cidrContains(networkCIDR, canonicalCIDR) {
+		return domain.Subnet{}, ErrSubnetCIDROutsideNetwork
 	}
 
 	// Reject overlap with existing subnets in the same VPC.
@@ -258,6 +315,20 @@ FOR UPDATE`, projectID, subnetID).
 		return domain.Subnet{}, ErrSubnetInUse
 	}
 
+	if s.Type == "public" {
+		// Lock the parent network row so a concurrent public subnet creation cannot slip past this check.
+		if _, err := tx.Exec(ctx, `SELECT id FROM networks WHERE id = $1 FOR UPDATE`, s.NetworkID); err != nil {
+			return domain.Subnet{}, err
+		}
+		publicSubnets, err := listPublicSubnets(ctx, tx, s.NetworkID)
+		if err != nil {
+			return domain.Subnet{}, err
+		}
+		if anchor, ok := domain.NATGatewayAnchor(publicSubnets); ok && anchor.ID == s.ID && len(publicSubnets) > 1 {
+			return domain.Subnet{}, ErrSubnetHostsNATGateway
+		}
+	}
+
 	if _, err := tx.Exec(ctx, `DELETE FROM subnets WHERE id = $1`, subnetID); err != nil {
 		return domain.Subnet{}, err
 	}
@@ -266,6 +337,26 @@ FOR UPDATE`, projectID, subnetID).
 		return domain.Subnet{}, err
 	}
 	return s, nil
+}
+
+func listPublicSubnets(ctx context.Context, tx pgx.Tx, networkID string) ([]domain.Subnet, error) {
+	rows, err := tx.Query(ctx, `
+SELECT id, type, created_at FROM subnets
+WHERE network_id = $1 AND type = 'public'`, networkID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var subnets []domain.Subnet
+	for rows.Next() {
+		var s domain.Subnet
+		if err := rows.Scan(&s.ID, &s.Type, &s.CreatedAt); err != nil {
+			return nil, err
+		}
+		subnets = append(subnets, s)
+	}
+	return subnets, rows.Err()
 }
 
 // isUsableHostGateway reports whether host is a valid gateway address within cidr —
@@ -311,11 +402,11 @@ func (p *Postgres) DeleteNetwork(ctx context.Context, projectID string, networkI
 
 	var n domain.Network
 	err = tx.QueryRow(ctx, `
-SELECT id, project_id, name, ovn_vpc_name, status, created_at
+SELECT id, project_id, name, COALESCE(cidr, ''), ovn_vpc_name, status, created_at
 FROM networks
 WHERE project_id = $1 AND id = $2
 FOR UPDATE`, projectID, networkID).
-		Scan(&n.ID, &n.ProjectID, &n.Name, &n.OVNVPCName, &n.Status, &n.CreatedAt)
+		Scan(&n.ID, &n.ProjectID, &n.Name, &n.CIDR, &n.OVNVPCName, &n.Status, &n.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Network{}, ErrNotFound
 	}

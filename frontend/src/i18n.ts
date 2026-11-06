@@ -41,12 +41,13 @@ export const messages = {
     startVM: "시작",
     stopVM: "중지",
     console: "콘솔",
-    consoleUnavailable: "콘솔 스트리밍은 아직 연결되지 않았습니다",
+    consoleUnavailable: "콘솔 연결 실패",
     consoleConnected: "콘솔 연결됨",
     consoleConnecting: "콘솔 연결 중",
     consoleDisconnected: "콘솔 연결 종료",
     consoleClose: "콘솔 닫기",
-    consoleFocusHint: "이 영역을 클릭하고 키보드로 입력하세요.",
+    consoleFocusHint: "콘솔 출력을 기다리는 중입니다. 이 영역을 클릭하고 입력하세요.",
+    consoleLoginHint: "VM을 만들 때 cloud-init에 넣은 계정으로 로그인하세요. Ctrl+C로 실행 중인 명령을 멈춥니다.",
     actionFailed: "VM 작업 요청 실패",
     deleteVM: "삭제",
     deleting: "삭제 중",
@@ -72,7 +73,29 @@ export const messages = {
     recentEvents: "최근 이벤트",
     noEvents: "이벤트가 없습니다",
     imagesTitle: "이미지",
-    imagesDescription: "프로젝트 범위로 노출되는 CDI 이미지 가져오기입니다.",
+    imagesDescription: "VM을 만들 때 이 URL에서 루트 디스크를 받습니다. 공용 이미지는 관리자가 제공하며 모든 프로젝트에서 씁니다.",
+    imageScopeProject: "프로젝트 이미지",
+    imageScopePublic: "공용 이미지 · 관리자가 제공",
+    imagePublicBadge: "공용",
+    projectImagesEmpty: "이 프로젝트에 등록한 이미지가 없습니다",
+    publicImagesEmpty: "공용 이미지가 없습니다",
+    imagePreset: "예시 이미지",
+    imagePresetCustom: "직접 입력",
+    imageNameLabel: "이미지 이름",
+    imageUrlLabel: "이미지 URL (qcow2/raw/img, http/https)",
+    imageOsTypeLabel: "OS",
+    imageRegister: "이미지 등록",
+    imageDelete: "삭제",
+    imageActionFailed: "이미지 요청 실패",
+    errorImageNameTaken: "같은 이름의 이미지가 이미 있습니다",
+    errorFlavorDiskTooSmall: "선택한 사양의 루트 디스크가 이미지보다 작습니다. 더 큰 사양을 고르세요",
+    flavorDiskTooSmall: "디스크 부족",
+    imageDiskSize: "디스크 {size} GiB",
+    imageDiskSizeUnknown: "디스크 크기 알 수 없음",
+    errorImageSourceUrlInvalid: "이미지 URL은 http 또는 https 주소여야 합니다",
+    errorImageOsTypeInvalid: "OS는 linux 또는 windows만 가능합니다",
+    errorImageInUse: "이 이미지를 쓰는 VM이 있습니다. VM을 먼저 삭제하세요",
+    errorImageNotFound: "이미지를 찾을 수 없습니다",
     noImages: "이미지가 없습니다",
     flavorsTitle: "플레이버",
     flavorsDescription: "VM 요청에 사용할 쿼터 인지 컴퓨트 옵션입니다.",
@@ -103,8 +126,32 @@ export const messages = {
     subnetEmpty: "서브넷이 없습니다",
     vmSubnetLabel: "서브넷",
     vmSubnetNone: "없음",
+    vmNetworkLabel: "VPC",
+    vmNetworkNone: "VPC 없음 (기본 파드 네트워크)",
+    vmSubnetSelect: "서브넷 선택",
+    vmSubnetRequired: "VPC를 골랐으면 서브넷도 선택하세요",
+    vmSubnetEmpty: "이 VPC에 서브넷이 없습니다",
+    noReadyImages: "사용 가능한 이미지가 없습니다",
+    errorInvalidImage: "이 프로젝트에 없는 이미지입니다",
+    errorImageNotReady: "이미지를 아직 가져오는 중입니다. 준비된 뒤에 다시 시도하세요",
+    errorInvalidFlavor: "사용할 수 없는 사양(flavor)입니다",
+    errorInvalidSubnet: "이 프로젝트에 없는 서브넷입니다",
+    errorVmProvisionFailed: "VM 기록은 만들었지만 클러스터에 리소스를 만들지 못했습니다",
+    cloudInitUsername: "초기 사용자",
+    cloudInitPassword: "초기 비밀번호",
+    cloudInitSSHPublicKey: "SSH 공개키 (선택)",
     networkActionFailed: "네트워크 요청 실패",
     subnetActionFailed: "서브넷 요청 실패",
+    networkCidrLabel: "VPC CIDR (예: 10.10.0.0/16)",
+    subnetCidrWithin: "CIDR ({cidr} 안)",
+    errorNetworkCidrInvalid: "VPC CIDR은 사설 대역(10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) 안의 /16~/28이어야 합니다",
+    errorNetworkCidrReserved: "VPC CIDR이 클러스터 내부 대역과 겹칩니다",
+    errorNetworkInUse: "서브넷이 남아 있는 VPC는 삭제할 수 없습니다",
+    errorSubnetCidrInvalid: "올바른 IPv4 CIDR이 아닙니다",
+    errorSubnetCidrOverlap: "같은 VPC의 다른 서브넷과 CIDR이 겹칩니다",
+    errorSubnetCidrOutsideVpc: "서브넷 CIDR이 VPC CIDR 밖에 있습니다",
+    errorSubnetInUse: "VM이 연결된 서브넷은 삭제할 수 없습니다",
+    errorSubnetHostsNatGateway: "이 서브넷에 VPC NAT 게이트웨이가 있습니다. 다른 public 서브넷을 먼저 삭제하세요",
   },
   en: {
     privateCloud: "Private Cloud",
@@ -141,12 +188,13 @@ export const messages = {
     startVM: "Start",
     stopVM: "Stop",
     console: "Console",
-    consoleUnavailable: "Console streaming is not wired yet",
+    consoleUnavailable: "Console connection failed",
     consoleConnected: "Console connected",
     consoleConnecting: "Connecting console",
     consoleDisconnected: "Console disconnected",
     consoleClose: "Close console",
-    consoleFocusHint: "Click this area and type from your keyboard.",
+    consoleFocusHint: "Waiting for console output. Click this area and type from your keyboard.",
+    consoleLoginHint: "Log in with the account you set in cloud-init when creating the VM. Ctrl+C stops the running command.",
     actionFailed: "VM action request failed",
     deleteVM: "Delete",
     deleting: "Deleting",
@@ -172,7 +220,29 @@ export const messages = {
     recentEvents: "Recent events",
     noEvents: "No events",
     imagesTitle: "Images",
-    imagesDescription: "CDI imports exposed at project scope.",
+    imagesDescription: "A VM's root disk is downloaded from this URL when the VM is created. Public images come from an admin and every project can use them.",
+    imageScopeProject: "Project images",
+    imageScopePublic: "Public images · provided by an admin",
+    imagePublicBadge: "Public",
+    projectImagesEmpty: "No images registered in this project",
+    publicImagesEmpty: "No public images",
+    imagePreset: "Example image",
+    imagePresetCustom: "Custom",
+    imageNameLabel: "Image name",
+    imageUrlLabel: "Image URL (qcow2/raw/img, http/https)",
+    imageOsTypeLabel: "OS",
+    imageRegister: "Register image",
+    imageDelete: "Delete",
+    imageActionFailed: "Image request failed",
+    errorImageNameTaken: "An image with this name already exists",
+    errorFlavorDiskTooSmall: "The flavor's root disk is smaller than the image. Pick a larger flavor",
+    flavorDiskTooSmall: "disk too small",
+    imageDiskSize: "{size} GiB disk",
+    imageDiskSizeUnknown: "disk size unknown",
+    errorImageSourceUrlInvalid: "The image URL must be an http or https address",
+    errorImageOsTypeInvalid: "OS must be linux or windows",
+    errorImageInUse: "Virtual machines still use this image. Delete them first",
+    errorImageNotFound: "The image was not found",
     noImages: "No images",
     flavorsTitle: "Flavors",
     flavorsDescription: "Quota-aware compute choices for VM requests.",
@@ -203,8 +273,32 @@ export const messages = {
     subnetEmpty: "No subnets yet",
     vmSubnetLabel: "Subnet",
     vmSubnetNone: "None",
+    vmNetworkLabel: "VPC",
+    vmNetworkNone: "No VPC (default pod network)",
+    vmSubnetSelect: "Select a subnet",
+    vmSubnetRequired: "Pick a subnet for the selected VPC",
+    vmSubnetEmpty: "This VPC has no subnets",
+    noReadyImages: "No images are ready",
+    errorInvalidImage: "The image does not exist in this project",
+    errorImageNotReady: "The image is still importing. Try again once it is ready",
+    errorInvalidFlavor: "The flavor is not available",
+    errorInvalidSubnet: "The subnet does not exist in this project",
+    errorVmProvisionFailed: "The VM record was saved, but the cluster resources could not be created",
+    cloudInitUsername: "Initial user",
+    cloudInitPassword: "Initial password",
+    cloudInitSSHPublicKey: "SSH public key (optional)",
     networkActionFailed: "Network request failed",
     subnetActionFailed: "Subnet request failed",
+    networkCidrLabel: "VPC CIDR (e.g. 10.10.0.0/16)",
+    subnetCidrWithin: "CIDR (within {cidr})",
+    errorNetworkCidrInvalid: "VPC CIDR must be a /16 to /28 inside a private range (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)",
+    errorNetworkCidrReserved: "VPC CIDR overlaps a cluster-internal range",
+    errorNetworkInUse: "A VPC with subnets cannot be deleted",
+    errorSubnetCidrInvalid: "Not a valid IPv4 CIDR",
+    errorSubnetCidrOverlap: "CIDR overlaps another subnet in this VPC",
+    errorSubnetCidrOutsideVpc: "Subnet CIDR is outside the VPC CIDR",
+    errorSubnetInUse: "A subnet with VMs attached cannot be deleted",
+    errorSubnetHostsNatGateway: "This subnet hosts the VPC NAT gateway. Delete the other public subnets first",
   },
 } as const;
 
@@ -215,6 +309,54 @@ export function getInitialLanguage(): Language {
 
 export function saveLanguage(language: Language) {
   window.localStorage.setItem("kloudia-language", language);
+}
+
+// translateApiError explains a known backend error code, or falls back to a generic message.
+export function translateApiError(error: unknown, language: Language, fallback: string): string {
+  const t = messages[language];
+  const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
+  switch (code) {
+    case "NETWORK_CIDR_INVALID":
+      return t.errorNetworkCidrInvalid;
+    case "NETWORK_CIDR_RESERVED":
+      return t.errorNetworkCidrReserved;
+    case "NETWORK_IN_USE":
+      return t.errorNetworkInUse;
+    case "SUBNET_CIDR_INVALID":
+      return t.errorSubnetCidrInvalid;
+    case "SUBNET_CIDR_OVERLAP":
+      return t.errorSubnetCidrOverlap;
+    case "SUBNET_CIDR_OUTSIDE_VPC":
+      return t.errorSubnetCidrOutsideVpc;
+    case "SUBNET_IN_USE":
+      return t.errorSubnetInUse;
+    case "SUBNET_HOSTS_NAT_GATEWAY":
+      return t.errorSubnetHostsNatGateway;
+    case "INVALID_IMAGE":
+      return t.errorInvalidImage;
+    case "IMAGE_NOT_READY":
+      return t.errorImageNotReady;
+    case "INVALID_FLAVOR":
+      return t.errorInvalidFlavor;
+    case "INVALID_SUBNET":
+      return t.errorInvalidSubnet;
+    case "FLAVOR_DISK_TOO_SMALL":
+      return t.errorFlavorDiskTooSmall;
+    case "IMAGE_NAME_TAKEN":
+      return t.errorImageNameTaken;
+    case "IMAGE_SOURCE_URL_INVALID":
+      return t.errorImageSourceUrlInvalid;
+    case "IMAGE_OS_TYPE_INVALID":
+      return t.errorImageOsTypeInvalid;
+    case "IMAGE_IN_USE":
+      return t.errorImageInUse;
+    case "IMAGE_NOT_FOUND":
+      return t.errorImageNotFound;
+    case "VM_PROVISION_FAILED":
+      return t.errorVmProvisionFailed;
+    default:
+      return fallback;
+  }
 }
 
 export function translateStatus(status: string, language: Language): string {

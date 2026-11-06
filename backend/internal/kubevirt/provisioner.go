@@ -10,6 +10,8 @@ import (
 type Applier interface {
 	Apply(ctx context.Context, resource map[string]any) error
 	Delete(ctx context.Context, resource map[string]any) error
+	// Patch merge-patches resource onto the existing object with the same name.
+	Patch(ctx context.Context, resource map[string]any) error
 	SetVirtualMachineRunStrategy(ctx context.Context, namespace string, name string, runStrategy string) error
 }
 
@@ -17,6 +19,13 @@ type Provisioner struct {
 	namespace        string
 	storageClassName string
 	applier          Applier
+	subnetDNSServers []string
+}
+
+// SetSubnetDNSServers sets the DNS servers handed to VMs attached to a VPC subnet. A VPC is isolated from the
+// cluster DNS service, so without them such VMs get an unreachable resolver. Empty keeps the cluster DNS.
+func (p *Provisioner) SetSubnetDNSServers(servers []string) {
+	p.subnetDNSServers = servers
 }
 
 func NewProvisioner(namespace string, storageClassName string, applier Applier) *Provisioner {
@@ -32,6 +41,9 @@ func (p *Provisioner) CreateVirtualMachine(ctx context.Context, plan domain.Virt
 		return errors.New("kubevirt applier is not configured")
 	}
 	resources := BuildResources(p.namespace, p.storageClassName, plan)
+	if plan.Subnet != nil && len(p.subnetDNSServers) > 0 {
+		applyDNSServers(resources.VirtualMachine, p.subnetDNSServers)
+	}
 	if err := p.applier.Apply(ctx, resources.DataVolume); err != nil {
 		return err
 	}

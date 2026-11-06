@@ -1,6 +1,9 @@
 package store
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestNormalizeCIDRRejectsInvalid(t *testing.T) {
 	if _, err := normalizeCIDR("not-a-cidr"); err == nil {
@@ -57,5 +60,52 @@ func TestIsUsableHostGateway(t *testing.T) {
 			t.Errorf("isUsableHostGateway(%q, %q) = %v, want %v — %s",
 				tc.cidr, tc.host, got, tc.want, tc.desc)
 		}
+	}
+}
+
+func TestNormalizeNetworkCIDRAcceptsPrivateRanges(t *testing.T) {
+	cases := map[string]string{
+		"10.10.0.0/16":    "10.10.0.0/16",
+		"10.10.5.7/16":    "10.10.0.0/16",
+		"172.20.0.0/20":   "172.20.0.0/20",
+		"192.168.10.0/28": "192.168.10.0/28",
+	}
+	for in, want := range cases {
+		got, err := NormalizeNetworkCIDR(in)
+		if err != nil || got != want {
+			t.Fatalf("%s: expected %s, got %q (err %v)", in, want, got, err)
+		}
+	}
+}
+
+func TestNormalizeNetworkCIDRRejectsPublicOrOutOfRange(t *testing.T) {
+	for _, in := range []string{
+		"8.8.8.0/24",     // public
+		"172.32.0.0/16",  // just outside 172.16.0.0/12
+		"10.0.0.0/8",     // larger than /16
+		"10.0.0.0/15",    // larger than /16
+		"10.0.0.0/29",    // smaller than /28
+		"192.168.0.0/15", // spans beyond 192.168.0.0/16
+		"bogus",
+		"fd00::/48",
+	} {
+		if _, err := NormalizeNetworkCIDR(in); !errors.Is(err, ErrNetworkCIDRInvalid) {
+			t.Fatalf("%s: expected ErrNetworkCIDRInvalid, got %v", in, err)
+		}
+	}
+}
+
+func TestCIDRContains(t *testing.T) {
+	if !cidrContains("10.10.0.0/16", "10.10.3.0/24") {
+		t.Fatal("expected /24 inside its /16")
+	}
+	if !cidrContains("10.10.0.0/16", "10.10.0.0/16") {
+		t.Fatal("expected a cidr to contain itself")
+	}
+	if cidrContains("10.10.0.0/16", "10.11.0.0/24") {
+		t.Fatal("expected sibling range to be outside")
+	}
+	if cidrContains("10.10.0.0/16", "10.0.0.0/8") {
+		t.Fatal("expected a larger range to be outside")
 	}
 }
