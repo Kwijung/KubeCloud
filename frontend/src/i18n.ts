@@ -73,7 +73,29 @@ export const messages = {
     recentEvents: "최근 이벤트",
     noEvents: "이벤트가 없습니다",
     imagesTitle: "이미지",
-    imagesDescription: "프로젝트 범위로 노출되는 CDI 이미지 가져오기입니다.",
+    imagesDescription: "VM을 만들 때 이 URL에서 루트 디스크를 받습니다. 공용 이미지는 관리자가 제공하며 모든 프로젝트에서 씁니다.",
+    imageScopeProject: "프로젝트 이미지",
+    imageScopePublic: "공용 이미지 · 관리자가 제공",
+    imagePublicBadge: "공용",
+    projectImagesEmpty: "이 프로젝트에 등록한 이미지가 없습니다",
+    publicImagesEmpty: "공용 이미지가 없습니다",
+    imagePreset: "예시 이미지",
+    imagePresetCustom: "직접 입력",
+    imageNameLabel: "이미지 이름",
+    imageUrlLabel: "이미지 URL (qcow2/raw/img, http/https)",
+    imageOsTypeLabel: "OS",
+    imageRegister: "이미지 등록",
+    imageDelete: "삭제",
+    imageActionFailed: "이미지 요청 실패",
+    errorImageNameTaken: "같은 이름의 이미지가 이미 있습니다",
+    errorFlavorDiskTooSmall: "선택한 사양의 루트 디스크가 이미지보다 작습니다. 더 큰 사양을 고르세요",
+    flavorDiskTooSmall: "디스크 부족",
+    imageDiskSize: "디스크 {size} GiB",
+    imageDiskSizeUnknown: "디스크 크기 알 수 없음",
+    errorImageSourceUrlInvalid: "이미지 URL은 http 또는 https 주소여야 합니다",
+    errorImageOsTypeInvalid: "OS는 linux 또는 windows만 가능합니다",
+    errorImageInUse: "이 이미지를 쓰는 VM이 있습니다. VM을 먼저 삭제하세요",
+    errorImageNotFound: "이미지를 찾을 수 없습니다",
     noImages: "이미지가 없습니다",
     flavorsTitle: "플레이버",
     flavorsDescription: "VM 요청에 사용할 쿼터 인지 컴퓨트 옵션입니다.",
@@ -104,6 +126,17 @@ export const messages = {
     subnetEmpty: "서브넷이 없습니다",
     vmSubnetLabel: "서브넷",
     vmSubnetNone: "없음",
+    vmNetworkLabel: "VPC",
+    vmNetworkNone: "VPC 없음 (기본 파드 네트워크)",
+    vmSubnetSelect: "서브넷 선택",
+    vmSubnetRequired: "VPC를 골랐으면 서브넷도 선택하세요",
+    vmSubnetEmpty: "이 VPC에 서브넷이 없습니다",
+    noReadyImages: "사용 가능한 이미지가 없습니다",
+    errorInvalidImage: "이 프로젝트에 없는 이미지입니다",
+    errorImageNotReady: "이미지를 아직 가져오는 중입니다. 준비된 뒤에 다시 시도하세요",
+    errorInvalidFlavor: "사용할 수 없는 사양(flavor)입니다",
+    errorInvalidSubnet: "이 프로젝트에 없는 서브넷입니다",
+    errorVmProvisionFailed: "VM 기록은 만들었지만 클러스터에 리소스를 만들지 못했습니다",
     cloudInitUsername: "초기 사용자",
     cloudInitPassword: "초기 비밀번호",
     cloudInitSSHPublicKey: "SSH 공개키 (선택)",
@@ -187,7 +220,29 @@ export const messages = {
     recentEvents: "Recent events",
     noEvents: "No events",
     imagesTitle: "Images",
-    imagesDescription: "CDI imports exposed at project scope.",
+    imagesDescription: "A VM's root disk is downloaded from this URL when the VM is created. Public images come from an admin and every project can use them.",
+    imageScopeProject: "Project images",
+    imageScopePublic: "Public images · provided by an admin",
+    imagePublicBadge: "Public",
+    projectImagesEmpty: "No images registered in this project",
+    publicImagesEmpty: "No public images",
+    imagePreset: "Example image",
+    imagePresetCustom: "Custom",
+    imageNameLabel: "Image name",
+    imageUrlLabel: "Image URL (qcow2/raw/img, http/https)",
+    imageOsTypeLabel: "OS",
+    imageRegister: "Register image",
+    imageDelete: "Delete",
+    imageActionFailed: "Image request failed",
+    errorImageNameTaken: "An image with this name already exists",
+    errorFlavorDiskTooSmall: "The flavor's root disk is smaller than the image. Pick a larger flavor",
+    flavorDiskTooSmall: "disk too small",
+    imageDiskSize: "{size} GiB disk",
+    imageDiskSizeUnknown: "disk size unknown",
+    errorImageSourceUrlInvalid: "The image URL must be an http or https address",
+    errorImageOsTypeInvalid: "OS must be linux or windows",
+    errorImageInUse: "Virtual machines still use this image. Delete them first",
+    errorImageNotFound: "The image was not found",
     noImages: "No images",
     flavorsTitle: "Flavors",
     flavorsDescription: "Quota-aware compute choices for VM requests.",
@@ -218,6 +273,17 @@ export const messages = {
     subnetEmpty: "No subnets yet",
     vmSubnetLabel: "Subnet",
     vmSubnetNone: "None",
+    vmNetworkLabel: "VPC",
+    vmNetworkNone: "No VPC (default pod network)",
+    vmSubnetSelect: "Select a subnet",
+    vmSubnetRequired: "Pick a subnet for the selected VPC",
+    vmSubnetEmpty: "This VPC has no subnets",
+    noReadyImages: "No images are ready",
+    errorInvalidImage: "The image does not exist in this project",
+    errorImageNotReady: "The image is still importing. Try again once it is ready",
+    errorInvalidFlavor: "The flavor is not available",
+    errorInvalidSubnet: "The subnet does not exist in this project",
+    errorVmProvisionFailed: "The VM record was saved, but the cluster resources could not be created",
     cloudInitUsername: "Initial user",
     cloudInitPassword: "Initial password",
     cloudInitSSHPublicKey: "SSH public key (optional)",
@@ -266,6 +332,28 @@ export function translateApiError(error: unknown, language: Language, fallback: 
       return t.errorSubnetInUse;
     case "SUBNET_HOSTS_NAT_GATEWAY":
       return t.errorSubnetHostsNatGateway;
+    case "INVALID_IMAGE":
+      return t.errorInvalidImage;
+    case "IMAGE_NOT_READY":
+      return t.errorImageNotReady;
+    case "INVALID_FLAVOR":
+      return t.errorInvalidFlavor;
+    case "INVALID_SUBNET":
+      return t.errorInvalidSubnet;
+    case "FLAVOR_DISK_TOO_SMALL":
+      return t.errorFlavorDiskTooSmall;
+    case "IMAGE_NAME_TAKEN":
+      return t.errorImageNameTaken;
+    case "IMAGE_SOURCE_URL_INVALID":
+      return t.errorImageSourceUrlInvalid;
+    case "IMAGE_OS_TYPE_INVALID":
+      return t.errorImageOsTypeInvalid;
+    case "IMAGE_IN_USE":
+      return t.errorImageInUse;
+    case "IMAGE_NOT_FOUND":
+      return t.errorImageNotFound;
+    case "VM_PROVISION_FAILED":
+      return t.errorVmProvisionFailed;
     default:
       return fallback;
   }

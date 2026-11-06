@@ -49,6 +49,9 @@ export type Image = {
   sourceUrl: string;
   status: string;
   createdAt: string;
+  scope: "public" | "project"; // public images come from an admin and every project can use them
+  virtualSizeBytes?: number; // missing when the size could not be read (non-qcow2 image)
+  minRootDiskBytes?: number; // smallest flavor root disk that holds the image
 };
 
 export type VirtualMachine = {
@@ -81,6 +84,8 @@ export type VirtualMachineDetail = {
   pvcPhase: string;
   pvcCapacity: string;
   consoleAvailable: boolean;
+  subnet?: Subnet;
+  network?: Network;
   events: RuntimeEvent[];
 };
 
@@ -191,6 +196,32 @@ export async function deleteSubnet(projectId: string, networkId: string, subnetI
   }
 }
 
+export type CreateImageRequest = {
+  name: string;
+  osType: string;
+  sourceUrl: string;
+};
+
+export async function createImage(projectId: string, request: CreateImageRequest): Promise<Image> {
+  const response = await fetch(`${apiBaseUrl}/api/v1/projects/${projectId}/images`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  if (!response.ok) {
+    throw await apiError(response, "image create failed");
+  }
+  const body = (await response.json()) as { data: Image };
+  return body.data;
+}
+
+export async function deleteImage(projectId: string, imageId: string): Promise<void> {
+  const response = await fetch(`${apiBaseUrl}/api/v1/projects/${projectId}/images/${imageId}`, { method: "DELETE" });
+  if (!response.ok) {
+    throw await apiError(response, "image delete failed");
+  }
+}
+
 export async function fetchImages(projectId: string): Promise<Image[]> {
   const response = await getJSON<ListResponse<Image>>(`/api/v1/projects/${projectId}/images`);
   return response.data;
@@ -220,7 +251,7 @@ export async function createVirtualMachine(projectId: string, request: CreateVir
     body: JSON.stringify(request),
   });
   if (!response.ok) {
-    throw new Error(`vm create failed: ${response.status}`);
+    throw await apiError(response, "vm create failed");
   }
   const body = (await response.json()) as { data: VirtualMachine };
   return body.data;
