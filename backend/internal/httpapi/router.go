@@ -215,6 +215,7 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 	if networkProvisioner == nil {
 		networkProvisioner = noopNetworkProvisioner{}
 	}
+	locks := &vpcLocks{}
 	router := chi.NewRouter()
 	router.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:5173", "http://127.0.0.1:5174"},
@@ -624,6 +625,8 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			}
 			return
 		}
+		unlock := locks.lock(network.ID)
+		defer unlock()
 		publicSubnets, err := publicSubnetsOf(r.Context(), store, subnet, "")
 		if err != nil {
 			_, _ = store.DeleteSubnet(r.Context(), projectID, subnet.ID)
@@ -666,6 +669,8 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 		}
 		// The store rejects deleting the NAT gateway anchor while other public subnets remain, so the
 		// gateway goes only with the VPC's last public subnet.
+		unlock := locks.lock(network.ID)
+		defer unlock()
 		remainingPublicSubnets, err := publicSubnetsOf(r.Context(), store, subnet, subnet.ID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "SUBNET_DELETE_FAILED", "failed to delete subnet")
