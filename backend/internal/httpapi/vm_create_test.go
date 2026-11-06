@@ -12,10 +12,11 @@ import (
 )
 
 type recordingProvisioner struct {
-	plans      []domain.VirtualMachineProvisioningPlan
-	deletedVMs []domain.VirtualMachine
-	startedVMs []domain.VirtualMachine
-	stoppedVMs []domain.VirtualMachine
+	plans        []domain.VirtualMachineProvisioningPlan
+	deletedVMs   []domain.VirtualMachine
+	startedVMs   []domain.VirtualMachine
+	stoppedVMs   []domain.VirtualMachine
+	restartedVMs []domain.VirtualMachine
 }
 
 func (p *recordingProvisioner) CreateVirtualMachine(_ context.Context, plan domain.VirtualMachineProvisioningPlan) error {

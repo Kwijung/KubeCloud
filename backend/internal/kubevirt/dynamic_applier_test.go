@@ -1,9 +1,14 @@
 package kubevirt
 
 import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/rest"
 )
 
 func TestResourceMappingForKubeVirtResources(t *testing.T) {
@@ -92,5 +97,37 @@ func TestResourceMappingRejectsUnsupportedResource(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected unsupported resource error")
+	}
+}
+
+func TestRestartVirtualMachineCallsKubeVirtSubresource(t *testing.T) {
+	var gotMethod, gotPath string
+	status := http.StatusAccepted
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		if status == http.StatusConflict {
+			_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Conflict","code":409}`))
+		}
+	}))
+	defer server.Close()
+
+	// An API server behind a path prefix, as with some proxies, must keep its prefix.
+	applier, err := newDynamicApplierForConfig(&rest.Config{Host: server.URL + "/k8s/clusters/c-1"})
+	if err != nil {
+		t.Fatalf("applier: %v", err)
+	}
+	if err := applier.RestartVirtualMachine(context.Background(), "kloudia-vms", "platform-web-01"); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	want := "/k8s/clusters/c-1/apis/subresources.kubevirt.io/v1/namespaces/kloudia-vms/virtualmachines/platform-web-01/restart"
+	if gotMethod != http.MethodPut || gotPath != want {
+		t.Fatalf("got %s %s, want PUT %s", gotMethod, gotPath, want)
+	}
+
+	status = http.StatusConflict
+	if err := applier.RestartVirtualMachine(context.Background(), "kloudia-vms", "platform-web-01"); !errors.Is(err, ErrVirtualMachineNotRunning) {
+		t.Fatalf("KubeVirt's 409 should mean not running, got %v", err)
 	}
 }

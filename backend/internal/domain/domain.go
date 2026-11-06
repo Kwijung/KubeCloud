@@ -16,6 +16,26 @@ type Flavor struct {
 	MemoryBytes   int64  `json:"memoryBytes"`
 	RootDiskBytes int64  `json:"rootDiskBytes"`
 	Enabled       bool   `json:"enabled"`
+	// VMCount is the number of VMs using the flavor; only the admin flavor list sets it.
+	VMCount *int `json:"vmCount,omitempty"`
+}
+
+// FlavorInput defines a new flavor.
+type FlavorInput struct {
+	Name          string `json:"name"`
+	CPU           int    `json:"cpu"`
+	MemoryBytes   int64  `json:"memoryBytes"`
+	RootDiskBytes int64  `json:"rootDiskBytes"`
+}
+
+// FlavorUpdate changes the fields that are set. CPU, memory and disk can only change while no VM uses the
+// flavor; the name and whether new VMs may use it can always change.
+type FlavorUpdate struct {
+	Name          *string `json:"name"`
+	CPU           *int    `json:"cpu"`
+	MemoryBytes   *int64  `json:"memoryBytes"`
+	RootDiskBytes *int64  `json:"rootDiskBytes"`
+	Enabled       *bool   `json:"enabled"`
 }
 
 type Image struct {

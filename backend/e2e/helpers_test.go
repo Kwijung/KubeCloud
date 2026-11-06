@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -183,6 +184,8 @@ type console struct {
 	conn *websocket.Conn
 	out  chan string
 	buf  strings.Builder
+	// closeCode is the server's WebSocket close code, set before out is closed.
+	closeCode int
 }
 
 func (e *env) openConsole(t *testing.T, project, id string) *console {
@@ -202,6 +205,10 @@ func (e *env) openConsole(t *testing.T, project, id string) *console {
 		for {
 			_, b, err := conn.ReadMessage()
 			if err != nil {
+				var closeErr *websocket.CloseError
+				if errors.As(err, &closeErr) {
+					c.closeCode = closeErr.Code
+				}
 				return
 			}
 			c.out <- string(b)

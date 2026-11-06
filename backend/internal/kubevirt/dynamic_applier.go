@@ -3,6 +3,7 @@ package kubevirt
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -11,12 +12,15 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
 type DynamicApplier struct {
 	client dynamic.Interface
+	// rest calls KubeVirt subresources; it normalizes the API server host the way client-go does.
+	rest rest.Interface
 }
 
 func NewDynamicApplier(kubeconfigPath string) (*DynamicApplier, error) {
@@ -24,11 +28,19 @@ func NewDynamicApplier(kubeconfigPath string) (*DynamicApplier, error) {
 	if err != nil {
 		return nil, err
 	}
+	return newDynamicApplierForConfig(cfg)
+}
+
+func newDynamicApplierForConfig(cfg *rest.Config) (*DynamicApplier, error) {
 	client, err := dynamic.NewForConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return &DynamicApplier{client: client}, nil
+	clientset, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &DynamicApplier{client: client, rest: clientset.CoreV1().RESTClient()}, nil
 }
 
 func (a *DynamicApplier) Apply(ctx context.Context, resource map[string]any) error {
@@ -134,6 +146,27 @@ func (a *DynamicApplier) SetVirtualMachineRunStrategy(ctx context.Context, names
 	_, err := a.client.Resource(schema.GroupVersionResource{Group: "kubevirt.io", Version: "v1", Resource: "virtualmachines"}).
 		Namespace(namespace).
 		Patch(ctx, name, types.MergePatchType, patch, v1.PatchOptions{})
+	return err
+}
+
+// ErrVirtualMachineNotRunning is returned when KubeVirt refuses a restart because the VM is not running.
+var ErrVirtualMachineNotRunning = errors.New("virtual machine is not running")
+
+// RestartVirtualMachine calls PUT .../virtualmachines/{name}/restart on KubeVirt's subresource API, which
+// the dynamic client cannot reach.
+func (a *DynamicApplier) RestartVirtualMachine(ctx context.Context, namespace string, name string) error {
+	if a == nil || a.rest == nil {
+		return fmt.Errorf("kubernetes client is not configured")
+	}
+	err := a.rest.Put().
+		AbsPath("/apis/subresources.kubevirt.io/v1/namespaces", namespace, "virtualmachines", name, "restart").
+		SetHeader("Content-Type", "application/json").
+		Body([]byte("{}")).
+		Do(ctx).
+		Error()
+	if apierrors.IsConflict(err) {
+		return fmt.Errorf("restart %s/%s: %w", namespace, name, ErrVirtualMachineNotRunning)
+	}
 	return err
 }
 

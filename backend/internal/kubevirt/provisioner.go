@@ -13,6 +13,8 @@ type Applier interface {
 	// Patch merge-patches resource onto the existing object with the same name.
 	Patch(ctx context.Context, resource map[string]any) error
 	SetVirtualMachineRunStrategy(ctx context.Context, namespace string, name string, runStrategy string) error
+	// RestartVirtualMachine reboots a running VM through KubeVirt's restart subresource.
+	RestartVirtualMachine(ctx context.Context, namespace string, name string) error
 }
 
 type Provisioner struct {
@@ -76,6 +78,13 @@ func (p *Provisioner) StartVirtualMachine(ctx context.Context, vm domain.Virtual
 		return errors.New("kubevirt applier is not configured")
 	}
 	return p.applier.SetVirtualMachineRunStrategy(ctx, p.namespace, vm.ID, "Always")
+}
+
+func (p *Provisioner) RestartVirtualMachine(ctx context.Context, vm domain.VirtualMachine) error {
+	if p == nil || p.applier == nil {
+		return errors.New("kubevirt applier is not configured")
+	}
+	return p.applier.RestartVirtualMachine(ctx, p.namespace, vm.ID)
 }
 
 func (p *Provisioner) StopVirtualMachine(ctx context.Context, vm domain.VirtualMachine) error {
