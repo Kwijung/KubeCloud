@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -573,8 +574,16 @@ func TestPostgresFlavorAdmin(t *testing.T) {
 		t.Fatalf("create flavor: %v", err)
 	}
 	defer func() { _ = db.DeleteFlavor(ctx, flavor.ID) }()
-	if flavor.ID != "xlarge-test" || !flavor.Enabled {
+	if !strings.HasPrefix(flavor.ID, "flv-") || flavor.Name != "XLarge Test" || !flavor.Enabled {
 		t.Fatalf("unexpected flavor: %#v", flavor)
+	}
+	// Names that slug to the same thing, or to nothing, are still distinct flavors.
+	for _, name := range []string{"XLarge Test+", "소형", "중형"} {
+		other, err := db.CreateFlavor(ctx, domain.FlavorInput{Name: name, CPU: 1, MemoryBytes: gib, RootDiskBytes: gib})
+		if err != nil {
+			t.Fatalf("create flavor %q: %v", name, err)
+		}
+		defer func() { _ = db.DeleteFlavor(ctx, other.ID) }()
 	}
 	if _, err := db.CreateFlavor(ctx, domain.FlavorInput{Name: "xlarge test", CPU: 1, MemoryBytes: gib, RootDiskBytes: gib}); !errors.Is(err, ErrFlavorNameTaken) {
 		t.Fatalf("expected ErrFlavorNameTaken, got %v", err)
@@ -600,6 +609,10 @@ func TestPostgresFlavorAdmin(t *testing.T) {
 		t.Fatalf("expected the flavor with 1 VM, got %#v", listed)
 	}
 
+	sameCPU, sameMemory, sameDisk, newName := 8, 8*gib, 40*gib, "XLarge Renamed"
+	if _, err := db.UpdateFlavor(ctx, flavor.ID, domain.FlavorUpdate{Name: &newName, CPU: &sameCPU, MemoryBytes: &sameMemory, RootDiskBytes: &sameDisk}); err != nil {
+		t.Fatalf("an edit that resends unchanged sizes must rename a flavor in use: %v", err)
+	}
 	cpu := 16
 	if _, err := db.UpdateFlavor(ctx, flavor.ID, domain.FlavorUpdate{CPU: &cpu}); !errors.Is(err, ErrFlavorInUse) {
 		t.Fatalf("resizing a flavor in use must fail, got %v", err)
@@ -648,6 +661,42 @@ func TestPostgresFlavorAdmin(t *testing.T) {
 	for _, f := range all {
 		if f.ID == "small" && f.Name != renamed {
 			t.Fatalf("restart reverted the admin's edit: %q", f.Name)
+		}
+	}
+}
+
+func TestPostgresDeletedSeedFlavorStaysDeleted(t *testing.T) {
+	databaseURL := os.Getenv("KLOUDIA_STORE_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("KLOUDIA_STORE_TEST_DATABASE_URL is required for store integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	db, err := NewPostgres(databaseURL)
+	if err != nil {
+		t.Fatalf("new postgres: %v", err)
+	}
+	defer db.Close()
+	if err := db.ApplySchema(ctx); err != nil {
+		t.Fatalf("apply schema: %v", err)
+	}
+	if err := db.DeleteFlavor(ctx, "large"); err != nil && !errors.Is(err, ErrFlavorNotFound) {
+		t.Fatalf("delete large: %v", err)
+	}
+	defer func() {
+		_, _ = db.pool.Exec(ctx, `INSERT INTO flavors (id, name, cpu, memory_bytes, root_disk_bytes, enabled)
+VALUES ('large', 'Large', 4, 4294967296, 21474836480, true) ON CONFLICT DO NOTHING`)
+	}()
+	if err := db.ApplySchema(ctx); err != nil {
+		t.Fatalf("re-apply schema: %v", err)
+	}
+	all, err := db.ListAllFlavors(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, f := range all {
+		if f.ID == "large" {
+			t.Fatal("a deleted default flavor came back after restart")
 		}
 	}
 }

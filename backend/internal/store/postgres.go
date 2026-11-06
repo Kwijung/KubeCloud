@@ -144,13 +144,16 @@ VALUES
   ('data', 'Data', 'Analytics and data engineering workspace')
 ON CONFLICT (id) DO NOTHING;
 
+-- Admins manage flavors; the defaults go into an empty catalog only, so admin edits and deletions stick.
 INSERT INTO flavors (id, name, cpu, memory_bytes, root_disk_bytes, enabled)
-VALUES
-  ('small', 'Small', 1, 536870912, 2147483648, true),
-  ('medium', 'Medium', 2, 2147483648, 10737418240, true),
-  ('large', 'Large', 4, 4294967296, 21474836480, true)
--- Admins manage flavors; seeding only fills an empty catalog and never reverts their edits.
-ON CONFLICT (id) DO NOTHING;
+SELECT * FROM (VALUES
+  ('small', 'Small', 1, 536870912::bigint, 2147483648::bigint, true),
+  ('medium', 'Medium', 2, 2147483648::bigint, 10737418240::bigint, true),
+  ('large', 'Large', 4, 4294967296::bigint, 21474836480::bigint, true)
+) AS defaults (id, name, cpu, memory_bytes, root_disk_bytes, enabled)
+WHERE NOT EXISTS (SELECT 1 FROM flavors);
+
+CREATE UNIQUE INDEX IF NOT EXISTS flavors_name_lower ON flavors (lower(name));
 
 INSERT INTO images (id, project_id, name, os_type, source_url, status, scope)
 VALUES
@@ -319,11 +322,14 @@ WHERE id = $1 AND (project_id = $2 OR scope = 'public')`, imageID, projectID).
 		return domain.VirtualMachineProvisioningPlan{}, fmt.Errorf("image %s is %s: %w", image.ID, image.Status, ErrImageNotReady)
 	}
 
+	// FOR SHARE holds the flavor until the VM is saved, so an admin cannot resize or disable it in between
+	// (UpdateFlavor locks the row FOR UPDATE).
 	var flavor domain.Flavor
 	if err := tx.QueryRow(ctx, `
 SELECT id, name, cpu, memory_bytes, root_disk_bytes, enabled
 FROM flavors
-WHERE id = $1 AND enabled = true`, flavorID).
+WHERE id = $1 AND enabled = true
+FOR SHARE`, flavorID).
 		Scan(&flavor.ID, &flavor.Name, &flavor.CPU, &flavor.MemoryBytes, &flavor.RootDiskBytes, &flavor.Enabled); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.VirtualMachineProvisioningPlan{}, ErrFlavorNotFound

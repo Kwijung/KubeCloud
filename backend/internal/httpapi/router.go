@@ -499,6 +499,10 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			return
 		}
 		if err := provisioner.RestartVirtualMachine(r.Context(), vm); err != nil {
+			if errors.Is(err, kubevirt.ErrVirtualMachineNotRunning) {
+				writeError(w, http.StatusConflict, "VM_NOT_RUNNING", "only a running virtual machine can be restarted")
+				return
+			}
 			log.Printf("restart %s: %v", vm.ID, err)
 			writeError(w, http.StatusBadGateway, "VM_RESTART_FAILED", "failed to restart virtual machine")
 			return

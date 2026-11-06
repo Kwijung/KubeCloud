@@ -2,11 +2,14 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/kloudia/kloudia/backend/internal/domain"
 )
 
@@ -72,18 +75,34 @@ func (p *Postgres) CreateFlavor(ctx context.Context, input domain.FlavorInput) (
 	if err := validateFlavorSize(input.CPU, input.MemoryBytes, input.RootDiskBytes); err != nil {
 		return domain.Flavor{}, err
 	}
-	id := makeVirtualMachineID("", name)
+	// The ID is random rather than derived from the name: names may be non-ASCII or differ only in
+	// punctuation, and a flavor can be renamed. The unique index on lower(name) keeps names distinct.
+	id, err := newFlavorID()
+	if err != nil {
+		return domain.Flavor{}, err
+	}
 	var f domain.Flavor
-	err := p.pool.QueryRow(ctx, `
+	err = p.pool.QueryRow(ctx, `
 INSERT INTO flavors (id, name, cpu, memory_bytes, root_disk_bytes, enabled)
-SELECT $1, $2, $3, $4, $5, true
-WHERE NOT EXISTS (SELECT 1 FROM flavors WHERE lower(name) = lower($2))
-ON CONFLICT (id) DO NOTHING
+VALUES ($1, $2, $3, $4, $5, true)
 RETURNING `+flavorSelectColumns, id, name, input.CPU, input.MemoryBytes, input.RootDiskBytes).Scan(flavorColumns(&f)...)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if isUniqueViolation(err) {
 		return domain.Flavor{}, ErrFlavorNameTaken
 	}
 	return f, err
+}
+
+func newFlavorID() (string, error) {
+	raw := make([]byte, 4)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return "flv-" + hex.EncodeToString(raw), nil
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 // UpdateFlavor applies the set fields. Resizing is refused while a VM uses the flavor, because that VM was
@@ -102,7 +121,11 @@ func (p *Postgres) UpdateFlavor(ctx context.Context, id string, update domain.Fl
 		}
 		return domain.Flavor{}, err
 	}
-	resize := update.CPU != nil || update.MemoryBytes != nil || update.RootDiskBytes != nil
+	// A field counts as a resize only when its value changes, so an edit form that sends every field can
+	// still rename a flavor in use.
+	resize := (update.CPU != nil && *update.CPU != f.CPU) ||
+		(update.MemoryBytes != nil && *update.MemoryBytes != f.MemoryBytes) ||
+		(update.RootDiskBytes != nil && *update.RootDiskBytes != f.RootDiskBytes)
 	if resize {
 		var inUse bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM virtual_machines WHERE flavor_id = $1)`, id).Scan(&inUse); err != nil {
@@ -116,13 +139,6 @@ func (p *Postgres) UpdateFlavor(ctx context.Context, id string, update domain.Fl
 		f.Name = strings.TrimSpace(*update.Name)
 		if f.Name == "" {
 			return domain.Flavor{}, fmt.Errorf("name is required: %w", ErrFlavorInvalid)
-		}
-		var taken bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM flavors WHERE lower(name) = lower($1) AND id <> $2)`, f.Name, id).Scan(&taken); err != nil {
-			return domain.Flavor{}, err
-		}
-		if taken {
-			return domain.Flavor{}, ErrFlavorNameTaken
 		}
 	}
 	if update.CPU != nil {
@@ -143,6 +159,9 @@ func (p *Postgres) UpdateFlavor(ctx context.Context, id string, update domain.Fl
 	if _, err := tx.Exec(ctx, `
 UPDATE flavors SET name = $2, cpu = $3, memory_bytes = $4, root_disk_bytes = $5, enabled = $6 WHERE id = $1`,
 		id, f.Name, f.CPU, f.MemoryBytes, f.RootDiskBytes, f.Enabled); err != nil {
+		if isUniqueViolation(err) {
+			return domain.Flavor{}, ErrFlavorNameTaken
+		}
 		return domain.Flavor{}, err
 	}
 	return f, tx.Commit(ctx)
@@ -155,15 +174,17 @@ func (p *Postgres) DeleteFlavor(ctx context.Context, id string) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var exists, inUse bool
-	if err := tx.QueryRow(ctx, `
-SELECT
-  EXISTS (SELECT 1 FROM flavors WHERE id = $1),
-  EXISTS (SELECT 1 FROM virtual_machines WHERE flavor_id = $1)`, id).Scan(&exists, &inUse); err != nil {
+	// Locking the row waits out VM creations holding it FOR SHARE, so the in-use check below is final.
+	var locked string
+	if err := tx.QueryRow(ctx, `SELECT id FROM flavors WHERE id = $1 FOR UPDATE`, id).Scan(&locked); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrFlavorNotFound
+		}
 		return err
 	}
-	if !exists {
-		return ErrFlavorNotFound
+	var inUse bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM virtual_machines WHERE flavor_id = $1)`, id).Scan(&inUse); err != nil {
+		return err
 	}
 	if inUse {
 		return ErrFlavorInUse

@@ -16,8 +16,8 @@ var ErrBootLogUnavailable = errors.New("the virtual machine has no running insta
 const (
 	// guestConsoleLogContainer is the virt-launcher sidecar that records the guest's serial console output.
 	guestConsoleLogContainer = "guest-console-log"
-	bootLogTailLines         = int64(1000)
-	bootLogLimitBytes        = int64(256 << 10)
+	bootLogTailLines         = int64(500)
+	bootLogMaxBytes          = 256 << 10
 )
 
 // BootLogReader reads a VM's serial console output since it last started, without logging in.
@@ -49,15 +49,20 @@ func (r *BootLogReader) BootLog(ctx context.Context, vmID string) (string, error
 	if err != nil {
 		return "", err
 	}
-	tail, limit := bootLogTailLines, bootLogLimitBytes
+	// The kubelet applies a byte limit from the start of the tail, which would drop the newest lines, so
+	// the tail is trimmed here instead.
+	tail := bootLogTailLines
 	stream, err := r.client.CoreV1().Pods(r.namespace).GetLogs(pod, &corev1.PodLogOptions{
-		Container: guestConsoleLogContainer, TailLines: &tail, LimitBytes: &limit,
+		Container: guestConsoleLogContainer, TailLines: &tail,
 	}).Stream(ctx)
 	if err != nil {
 		return "", err
 	}
 	defer stream.Close()
 	raw, err := io.ReadAll(stream)
+	if len(raw) > bootLogMaxBytes {
+		raw = raw[len(raw)-bootLogMaxBytes:]
+	}
 	return string(raw), err
 }
 
@@ -71,12 +76,32 @@ func (r *BootLogReader) launcherPod(ctx context.Context, vmID string) (string, e
 	}
 	var newest *corev1.Pod
 	for i := range pods.Items {
-		if newest == nil || pods.Items[i].CreationTimestamp.After(newest.CreationTimestamp.Time) {
-			newest = &pods.Items[i]
+		pod := &pods.Items[i]
+		if !consoleLogStarted(pod) {
+			continue // still starting, or serial console logging is off for this VM
+		}
+		if newest == nil || pod.CreationTimestamp.After(newest.CreationTimestamp.Time) {
+			newest = pod
 		}
 	}
 	if newest == nil {
 		return "", ErrBootLogUnavailable
 	}
 	return newest.Name, nil
+}
+
+// consoleLogStarted reports whether the pod runs and its guest-console-log container (a native sidecar in
+// KubeVirt 1.9, so listed among the init containers) has started.
+func consoleLogStarted(pod *corev1.Pod) bool {
+	if pod.Status.Phase != corev1.PodRunning {
+		return false
+	}
+	for _, statuses := range [][]corev1.ContainerStatus{pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses} {
+		for _, status := range statuses {
+			if status.Name == guestConsoleLogContainer {
+				return status.State.Running != nil
+			}
+		}
+	}
+	return false
 }
