@@ -60,3 +60,17 @@ func TestLoadParsesVMDNSServers(t *testing.T) {
 		t.Fatalf("expected error for a non-IP DNS server")
 	}
 }
+
+func TestLoadValidatesDiskAccessMode(t *testing.T) {
+	if mode, err := Load().DiskAccessMode(); err != nil || mode != "ReadWriteOnce" {
+		t.Fatalf("expected the ReadWriteOnce default, got %q (%v)", mode, err)
+	}
+	t.Setenv("KLOUDIA_KUBEVIRT_DISK_ACCESS_MODE", "ReadWriteMany")
+	if mode, err := Load().DiskAccessMode(); err != nil || mode != "ReadWriteMany" {
+		t.Fatalf("expected ReadWriteMany, got %q (%v)", mode, err)
+	}
+	t.Setenv("KLOUDIA_KUBEVIRT_DISK_ACCESS_MODE", "ReadOnlyMany")
+	if _, err := Load().DiskAccessMode(); err == nil {
+		t.Fatal("a VM root disk cannot be ReadOnlyMany")
+	}
+}

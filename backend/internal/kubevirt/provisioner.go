@@ -20,6 +20,13 @@ type Provisioner struct {
 	storageClassName string
 	applier          Applier
 	subnetDNSServers []string
+	diskAccessMode   string
+}
+
+// SetDiskAccessMode sets the access mode of VM root disks. ReadWriteMany lets KubeVirt live-migrate a VM
+// when its storage class supports it; empty keeps ReadWriteOnce.
+func (p *Provisioner) SetDiskAccessMode(mode string) {
+	p.diskAccessMode = mode
 }
 
 // SetSubnetDNSServers sets the DNS servers handed to VMs attached to a VPC subnet. A VPC is isolated from the
@@ -43,6 +50,9 @@ func (p *Provisioner) CreateVirtualMachine(ctx context.Context, plan domain.Virt
 	resources := BuildResources(p.namespace, p.storageClassName, plan)
 	if plan.Subnet != nil && len(p.subnetDNSServers) > 0 {
 		applyDNSServers(resources.VirtualMachine, p.subnetDNSServers)
+	}
+	if p.diskAccessMode != "" {
+		resources.DataVolume["spec"].(map[string]any)["pvc"].(map[string]any)["accessModes"] = []any{p.diskAccessMode}
 	}
 	if err := p.applier.Apply(ctx, resources.DataVolume); err != nil {
 		return err

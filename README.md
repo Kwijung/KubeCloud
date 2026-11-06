@@ -92,6 +92,9 @@ KLOUDIA_RESERVED_CIDRS=10.244.0.0/16,10.96.0.0/12,10.16.0.0/16,100.64.0.0/16
 # DNS servers for VMs on a VPC subnet. A VPC cannot reach the cluster DNS service, so set a resolver the
 # VPC can reach (through the NAT gateway for public subnets). Empty keeps the cluster DNS.
 KLOUDIA_VM_DNS_SERVERS=10.0.0.2
+# Access mode of VM root disks. ReadWriteMany (needs a storage class that supports it, such as NFS) makes
+# VMs live-migratable; the default is ReadWriteOnce.
+KLOUDIA_KUBEVIRT_DISK_ACCESS_MODE=ReadWriteOnce
 ```
 
 A VM on a subnet uses that subnet as its only NIC and as the launcher pod's default network, so the guest

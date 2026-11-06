@@ -23,6 +23,8 @@ type Config struct {
 	ReservedCIDRs string
 	// VMDNSServers is a comma-separated list of DNS server IPs for VMs attached to a VPC subnet.
 	VMDNSServers string
+	// KubeVirtDiskAccessMode is the access mode of VM root disks: ReadWriteOnce or ReadWriteMany.
+	KubeVirtDiskAccessMode string
 }
 
 func Load() Config {
@@ -38,8 +40,9 @@ func Load() Config {
 		NetworkProvisioningEnabled: env("KLOUDIA_NETWORK_PROVISIONING_ENABLED", "false") == "true",
 		OVNExternalNetwork:         env("KLOUDIA_OVN_EXTERNAL_NETWORK", "ovn-vpc-external-network"),
 		// Defaults: Cilium pod CIDR, Kubernetes service CIDR, kube-ovn default and join subnets.
-		VMDNSServers:  env("KLOUDIA_VM_DNS_SERVERS", ""),
-		ReservedCIDRs: env("KLOUDIA_RESERVED_CIDRS", "10.244.0.0/16,10.96.0.0/12,10.16.0.0/16,100.64.0.0/16"),
+		VMDNSServers:           env("KLOUDIA_VM_DNS_SERVERS", ""),
+		KubeVirtDiskAccessMode: env("KLOUDIA_KUBEVIRT_DISK_ACCESS_MODE", "ReadWriteOnce"),
+		ReservedCIDRs:          env("KLOUDIA_RESERVED_CIDRS", "10.244.0.0/16,10.96.0.0/12,10.16.0.0/16,100.64.0.0/16"),
 	}
 }
 
@@ -58,6 +61,17 @@ func (c Config) ReservedPrefixes() ([]netip.Prefix, error) {
 		prefixes = append(prefixes, prefix.Masked())
 	}
 	return prefixes, nil
+}
+
+// DiskAccessMode validates KubeVirtDiskAccessMode. ReadWriteMany needs a storage class that supports it,
+// such as NFS, and makes VMs live-migratable.
+func (c Config) DiskAccessMode() (string, error) {
+	switch c.KubeVirtDiskAccessMode {
+	case "ReadWriteOnce", "ReadWriteMany":
+		return c.KubeVirtDiskAccessMode, nil
+	default:
+		return "", fmt.Errorf("KLOUDIA_KUBEVIRT_DISK_ACCESS_MODE: %q must be ReadWriteOnce or ReadWriteMany", c.KubeVirtDiskAccessMode)
+	}
 }
 
 // VMDNSServerList parses VMDNSServers.

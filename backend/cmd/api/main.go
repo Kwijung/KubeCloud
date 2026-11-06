@@ -52,6 +52,11 @@ func main() {
 			log.Fatalf("config: %v", err)
 		}
 		provisioner.SetSubnetDNSServers(vmDNSServers)
+		diskAccessMode, err := cfg.DiskAccessMode()
+		if err != nil {
+			log.Fatalf("config: %v", err)
+		}
+		provisioner.SetDiskAccessMode(diskAccessMode)
 		deps := httpapi.Dependencies{
 			Version:         cfg.Version,
 			Store:           db,

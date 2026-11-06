@@ -82,6 +82,9 @@ spec:
               value: kloudia-vms
             - name: KLOUDIA_KUBEVIRT_STORAGE_CLASS
               value: kv
+            # kv is NFS, which supports ReadWriteMany, so VMs can live-migrate.
+            - name: KLOUDIA_KUBEVIRT_DISK_ACCESS_MODE
+              value: ReadWriteMany
             - name: KLOUDIA_NETWORK_PROVISIONING_ENABLED
               value: "true"
             - name: KLOUDIA_OVN_EXTERNAL_NETWORK
