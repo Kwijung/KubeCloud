@@ -52,7 +52,21 @@ func (r *StatusReader) GetVirtualMachineStatus(ctx context.Context, vm domain.Vi
 	if err != nil && !apierrors.IsNotFound(err) {
 		return vm.Status, err
 	}
-	return runtimeStatus(kubeVM, vmi, dv), nil
+	status := runtimeStatus(kubeVM, vmi, dv)
+	if status == "Importing" {
+		pvc, err := r.get(ctx, schema.GroupVersionResource{Version: "v1", Resource: "persistentvolumeclaims"}, vm.ID+"-rootdisk")
+		if err != nil && !apierrors.IsNotFound(err) {
+			return status, err
+		}
+		importEvents, err := r.listImportEvents(ctx, vm.ID+"-rootdisk", pvc)
+		if err != nil {
+			return status, err
+		}
+		if importFailure(importEvents) != "" {
+			return "Failed", nil
+		}
+	}
+	return status, nil
 }
 
 func (r *StatusReader) GetVirtualMachineDetail(ctx context.Context, vm domain.VirtualMachine) (domain.VirtualMachineDetail, error) {
@@ -79,7 +93,11 @@ func (r *StatusReader) GetVirtualMachineDetail(ctx context.Context, vm domain.Vi
 	if err != nil {
 		return domain.VirtualMachineDetail{VirtualMachine: vm, RuntimeStatus: vm.Status}, err
 	}
-	return runtimeDetail(vm, kubeVM, vmi, dv, pvc, events), nil
+	importEvents, err := r.listImportEvents(ctx, vm.ID+"-rootdisk", pvc)
+	if err != nil {
+		return domain.VirtualMachineDetail{VirtualMachine: vm, RuntimeStatus: vm.Status}, err
+	}
+	return runtimeDetail(vm, kubeVM, vmi, dv, pvc, events, importEvents), nil
 }
 
 func (r *StatusReader) get(ctx context.Context, gvr schema.GroupVersionResource, name string) (*unstructured.Unstructured, error) {
@@ -170,6 +188,50 @@ func (r *StatusReader) listEvents(ctx context.Context, vmID string) ([]*unstruct
 	return events, nil
 }
 
+// listImportEvents returns the warning events of a root disk import: those on the DataVolume, and those on the
+// "prime" PVC that CDI imports into before handing the data to the target PVC (named prime-<target PVC UID>).
+func (r *StatusReader) listImportEvents(ctx context.Context, dataVolumeName string, pvc *unstructured.Unstructured) ([]*unstructured.Unstructured, error) {
+	names := []string{dataVolumeName}
+	if pvc != nil && pvc.GetUID() != "" {
+		names = append(names, "prime-"+string(pvc.GetUID()))
+	}
+	var events []*unstructured.Unstructured
+	for _, name := range names {
+		list, err := r.client.Resource(schema.GroupVersionResource{Version: "v1", Resource: "events"}).
+			Namespace(r.namespace).
+			List(ctx, v1.ListOptions{FieldSelector: "type=Warning,involvedObject.name=" + name})
+		if err != nil {
+			return nil, err
+		}
+		for i := range list.Items {
+			events = append(events, &list.Items[i])
+		}
+	}
+	return events, nil
+}
+
+// importFailure returns the error of a root disk import that is not going to succeed on its own, or "".
+// CDI retries a failed import forever, so the DataVolume stays in progress. A DataVolume "Error" event (for
+// example "DataVolume too small to contain image") is final; an import error is treated as final once it
+// has repeated, so a single dropped download does not fail the VM.
+func importFailure(events []*unstructured.Unstructured) string {
+	const repeatedImportErrors = 3
+	var message, latest string
+	for _, event := range events {
+		kind, _, _ := unstructured.NestedString(event.Object, "involvedObject", "kind")
+		reason := stringField(event, "reason")
+		count, _, _ := unstructured.NestedInt64(event.Object, "count")
+		final := (kind == "DataVolume" && reason == "Error") || (reason == "ErrImportFailed" && count >= repeatedImportErrors)
+		if !final {
+			continue
+		}
+		if timestamp := stringField(event, "lastTimestamp"); message == "" || timestamp >= latest {
+			message, latest = stringField(event, "message"), timestamp
+		}
+	}
+	return message
+}
+
 func runtimeStatus(vm *unstructured.Unstructured, vmi *unstructured.Unstructured, dv *unstructured.Unstructured) string {
 	if vm == nil && vmi == nil && dv == nil {
 		return "Missing"
@@ -203,9 +265,14 @@ func statusField(obj *unstructured.Unstructured, field string) string {
 	return value
 }
 
-func runtimeDetail(vm domain.VirtualMachine, kubeVM *unstructured.Unstructured, vmi *unstructured.Unstructured, dv *unstructured.Unstructured, pvc *unstructured.Unstructured, events []*unstructured.Unstructured) domain.VirtualMachineDetail {
+func runtimeDetail(vm domain.VirtualMachine, kubeVM *unstructured.Unstructured, vmi *unstructured.Unstructured, dv *unstructured.Unstructured, pvc *unstructured.Unstructured, events []*unstructured.Unstructured, importEvents []*unstructured.Unstructured) domain.VirtualMachineDetail {
 	runtime := runtimeStatus(kubeVM, vmi, dv)
 	reason, message := failureFromConditions(kubeVM, vmi, dv, pvc)
+	if runtime == "Importing" {
+		if failure := importFailure(importEvents); failure != "" {
+			runtime, reason, message = "Failed", "ImportFailed", failure
+		}
+	}
 	detail := domain.VirtualMachineDetail{
 		VirtualMachine:   vm,
 		RuntimeStatus:    runtime,
@@ -219,6 +286,9 @@ func runtimeDetail(vm domain.VirtualMachine, kubeVM *unstructured.Unstructured, 
 		PVCCapacity:      pvcCapacity(pvc),
 		ConsoleAvailable: runtime == "Running",
 		Events:           runtimeEvents(events),
+	}
+	if vmi == nil {
+		return detail
 	}
 	if interfaces, ok, _ := unstructured.NestedSlice(vmi.Object, "status", "interfaces"); ok && len(interfaces) > 0 {
 		if first, ok := interfaces[0].(map[string]any); ok {

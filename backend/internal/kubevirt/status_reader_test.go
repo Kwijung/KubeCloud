@@ -66,7 +66,7 @@ func TestRuntimeDetailExtractsVMIDataVolumePVCAndEvents(t *testing.T) {
 		"message": "VM started",
 	}}
 
-	detail := runtimeDetail(testVirtualMachine(), vm, vmi, dv, pvc, []*unstructured.Unstructured{event})
+	detail := runtimeDetail(testVirtualMachine(), vm, vmi, dv, pvc, []*unstructured.Unstructured{event}, nil)
 
 	if detail.RuntimeStatus != "Running" {
 		t.Fatalf("expected Running, got %q", detail.RuntimeStatus)
@@ -97,7 +97,7 @@ func TestRuntimeDetailIgnoresNonFailureConditions(t *testing.T) {
 		"message": "cannot migrate VMI which does not use masquerade",
 	}}, "status", "conditions")
 
-	detail := runtimeDetail(testVirtualMachine(), vm, objectWithStatus("VirtualMachineInstance", "", "Running"), objectWithStatus("DataVolume", "", "Succeeded"), nil, nil)
+	detail := runtimeDetail(testVirtualMachine(), vm, objectWithStatus("VirtualMachineInstance", "", "Running"), objectWithStatus("DataVolume", "", "Succeeded"), nil, nil, nil)
 
 	if detail.FailureReason != "" || detail.FailureMessage != "" {
 		t.Fatalf("expected no failure detail, got reason=%q message=%q", detail.FailureReason, detail.FailureMessage)
@@ -113,7 +113,7 @@ func TestRuntimeDetailExtractsFailureConditions(t *testing.T) {
 		"message": "0/1 nodes are available",
 	}}, "status", "conditions")
 
-	detail := runtimeDetail(testVirtualMachine(), vm, objectWithStatus("VirtualMachineInstance", "", "Scheduling"), objectWithStatus("DataVolume", "", "Succeeded"), nil, nil)
+	detail := runtimeDetail(testVirtualMachine(), vm, objectWithStatus("VirtualMachineInstance", "", "Scheduling"), objectWithStatus("DataVolume", "", "Succeeded"), nil, nil, nil)
 
 	if detail.FailureReason != "Unschedulable" || detail.FailureMessage != "0/1 nodes are available" {
 		t.Fatalf("expected failure detail, got reason=%q message=%q", detail.FailureReason, detail.FailureMessage)
@@ -143,4 +143,76 @@ func objectWithStatus(kind string, printableStatus string, phase string) *unstru
 		"kind":   kind,
 		"status": status,
 	}}
+}
+
+func warningEvent(kind string, name string, reason string, message string, count int64, lastTimestamp string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"type":           "Warning",
+		"reason":         reason,
+		"message":        message,
+		"count":          count,
+		"lastTimestamp":  lastTimestamp,
+		"involvedObject": map[string]any{"kind": kind, "name": name},
+	}}
+}
+
+func TestImportFailureDetectsDataVolumeError(t *testing.T) {
+	events := []*unstructured.Unstructured{
+		warningEvent("DataVolume", "platform-web-01-rootdisk", "Unschedulable", "Importer pod cannot be scheduled", 2, "2026-11-06T13:30:00Z"),
+		warningEvent("DataVolume", "platform-web-01-rootdisk", "Error", "DataVolume too small to contain image", 1, "2026-11-06T13:31:00Z"),
+	}
+	if got := importFailure(events); got != "DataVolume too small to contain image" {
+		t.Fatalf("expected the DataVolume error, got %q", got)
+	}
+}
+
+func TestImportFailureNeedsRepeatedImportErrors(t *testing.T) {
+	once := []*unstructured.Unstructured{
+		warningEvent("PersistentVolumeClaim", "prime-1", "ErrImportFailed", "failed to pull image: connection reset by peer", 2, "2026-11-06T13:30:00Z"),
+	}
+	if got := importFailure(once); got != "" {
+		t.Fatalf("a transient import error must not fail the VM, got %q", got)
+	}
+	repeated := []*unstructured.Unstructured{
+		warningEvent("PersistentVolumeClaim", "prime-1", "ErrImportFailed", "failed to pull image: connection reset by peer", 2, "2026-11-06T13:30:00Z"),
+		warningEvent("PersistentVolumeClaim", "prime-1", "ErrImportFailed", "Unable to connect to http data source: 404 Not Found", 3, "2026-11-06T13:32:00Z"),
+	}
+	if got := importFailure(repeated); got != "Unable to connect to http data source: 404 Not Found" {
+		t.Fatalf("expected the latest repeated import error, got %q", got)
+	}
+}
+
+func TestRuntimeDetailReportsFailedImport(t *testing.T) {
+	dv := objectWithStatus("DataVolume", "", "ImportInProgress")
+	events := []*unstructured.Unstructured{
+		warningEvent("DataVolume", "platform-web-01-rootdisk", "Error", "DataVolume too small to contain image", 4, "2026-11-06T13:31:00Z"),
+	}
+	detail := runtimeDetail(domain.VirtualMachine{ID: "platform-web-01"}, objectWithStatus("VirtualMachine", "Provisioning", ""), nil, dv, nil, nil, events)
+
+	if detail.RuntimeStatus != "Failed" {
+		t.Fatalf("expected Failed, got %q", detail.RuntimeStatus)
+	}
+	if detail.FailureReason != "ImportFailed" || detail.FailureMessage != "DataVolume too small to contain image" {
+		t.Fatalf("unexpected failure: reason=%q message=%q", detail.FailureReason, detail.FailureMessage)
+	}
+}
+
+func TestRuntimeDetailIgnoresImportErrorsAfterSuccess(t *testing.T) {
+	dv := objectWithStatus("DataVolume", "", "Succeeded")
+	events := []*unstructured.Unstructured{
+		warningEvent("DataVolume", "platform-web-01-rootdisk", "Error", "old error", 4, "2026-11-06T13:31:00Z"),
+	}
+	detail := runtimeDetail(domain.VirtualMachine{ID: "platform-web-01"}, objectWithStatus("VirtualMachine", "Running", ""), objectWithStatus("VirtualMachineInstance", "", "Running"), dv, nil, nil, events)
+
+	if detail.RuntimeStatus != "Running" {
+		t.Fatalf("expected Running once the import succeeded, got %q", detail.RuntimeStatus)
+	}
+}
+
+func TestRuntimeDetailWithoutVMI(t *testing.T) {
+	detail := runtimeDetail(testVirtualMachine(), objectWithStatus("VirtualMachine", "Stopped", ""), nil, objectWithStatus("DataVolume", "", "Succeeded"), nil, nil, nil)
+
+	if detail.RuntimeStatus != "Stopped" || detail.VMIIP != "" {
+		t.Fatalf("unexpected detail for a stopped VM: %#v", detail)
+	}
 }
