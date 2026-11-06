@@ -19,6 +19,13 @@ func TestImageCache(t *testing.T) {
 	const project = "platform"
 	suffix := fmt.Sprintf("%d", time.Now().Unix()%100000)
 
+	// A URL that cannot be fetched is refused at registration, not discovered by each VM later.
+	if code := e.call(t, http.MethodPost, "/admin/images", map[string]string{
+		"name": "e2e-missing-" + suffix, "sourceUrl": "https://download.cirros-cloud.net/0.6.2/does-not-exist.img",
+	}, nil); code != http.StatusBadRequest {
+		t.Fatalf("registering an unreachable URL: expected 400, got %d", code)
+	}
+
 	var created struct {
 		Data struct {
 			ID          string `json:"id"`

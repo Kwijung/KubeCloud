@@ -58,7 +58,7 @@ func (r *StatusReader) GetVirtualMachineStatus(ctx context.Context, vm domain.Vi
 		if err != nil && !apierrors.IsNotFound(err) {
 			return status, err
 		}
-		importEvents, err := r.listImportEvents(ctx, vm.ID+"-rootdisk", pvc)
+		importEvents, err := r.listImportEvents(ctx, vm.ID+"-rootdisk", dv, pvc)
 		if err != nil {
 			return status, err
 		}
@@ -93,7 +93,7 @@ func (r *StatusReader) GetVirtualMachineDetail(ctx context.Context, vm domain.Vi
 	if err != nil {
 		return domain.VirtualMachineDetail{VirtualMachine: vm, RuntimeStatus: vm.Status}, err
 	}
-	importEvents, err := r.listImportEvents(ctx, vm.ID+"-rootdisk", pvc)
+	importEvents, err := r.listImportEvents(ctx, vm.ID+"-rootdisk", dv, pvc)
 	if err != nil {
 		return domain.VirtualMachineDetail{VirtualMachine: vm, RuntimeStatus: vm.Status}, err
 	}
@@ -190,7 +190,9 @@ func (r *StatusReader) listEvents(ctx context.Context, vmID string) ([]*unstruct
 
 // listImportEvents returns the warning events of a root disk import: those on the DataVolume, and those on the
 // "prime" PVC that CDI imports into before handing the data to the target PVC (named prime-<target PVC UID>).
-func (r *StatusReader) listImportEvents(ctx context.Context, dataVolumeName string, pvc *unstructured.Unstructured) ([]*unstructured.Unstructured, error) {
+// Events outlive their objects (about an hour), and a DataVolume can be re-created under the same name, so
+// events on the DataVolume count only when they belong to the current one (its UID).
+func (r *StatusReader) listImportEvents(ctx context.Context, dataVolumeName string, dv, pvc *unstructured.Unstructured) ([]*unstructured.Unstructured, error) {
 	names := []string{dataVolumeName}
 	if pvc != nil && pvc.GetUID() != "" {
 		names = append(names, "prime-"+string(pvc.GetUID()))
@@ -204,7 +206,14 @@ func (r *StatusReader) listImportEvents(ctx context.Context, dataVolumeName stri
 			return nil, err
 		}
 		for i := range list.Items {
-			events = append(events, &list.Items[i])
+			event := &list.Items[i]
+			if name == dataVolumeName {
+				uid, _, _ := unstructured.NestedString(event.Object, "involvedObject", "uid")
+				if dv == nil || uid != string(dv.GetUID()) {
+					continue // an earlier DataVolume of the same name
+				}
+			}
+			events = append(events, event)
 		}
 	}
 	return events, nil

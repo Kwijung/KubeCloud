@@ -25,10 +25,19 @@ func ImageCacheVolumeName(imageID string) string {
 	return name[:54] + "-" + hex.EncodeToString(sum[:4])
 }
 
-// ImageCacheState is what the image cache reconciler records for an image.
+// ImageCacheState is what the image cache reconciler records for an image. StatusMessage explains a Failed
+// image, or why the cache of a Ready image failed (VMs then download the image).
 type ImageCacheState struct {
 	CacheVolume   string
 	CacheStatus   string
 	Status        string
 	StatusMessage string
+}
+
+// ImageCacheBytes is the size of an image's cache volume: the smallest root disk that holds the image,
+// rounded up to whole GiB. A VM cloned from the cache needs a root disk at least this large, because a clone
+// cannot be smaller than its source.
+func ImageCacheBytes(minRootDiskBytes int64) int64 {
+	const gib = int64(1) << 30
+	return (minRootDiskBytes + gib - 1) / gib * gib
 }

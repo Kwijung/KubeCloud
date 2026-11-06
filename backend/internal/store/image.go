@@ -216,14 +216,14 @@ WHERE virtual_size_bytes IS NULL`)
 	return images, rows.Err()
 }
 
-// ListImagesNeedingCache returns images of known size whose cache is still to be built: newly registered
-// (Pending), importing, or Ready images from before caching existed. Failed caches are not retried.
-func (p *Postgres) ListImagesNeedingCache(ctx context.Context) ([]domain.Image, error) {
+// ListImagesWithCache returns images of known size whose cache is to be built, is importing, or is Ready
+// (checked for a lost volume). Failed caches are not retried.
+func (p *Postgres) ListImagesWithCache(ctx context.Context) ([]domain.Image, error) {
 	rows, err := p.pool.Query(ctx, `
 SELECT `+imageSelectColumns+`
 FROM images
 WHERE virtual_size_bytes IS NOT NULL
-  AND (cache_status IN ('Pending', 'Importing') OR (cache_status = '' AND status = 'Ready'))
+  AND (cache_status IN ('Pending', 'Importing', 'Ready') OR (cache_status = '' AND status = 'Ready'))
 ORDER BY created_at`)
 	if err != nil {
 		return nil, err
@@ -240,10 +240,33 @@ ORDER BY created_at`)
 	return images, rows.Err()
 }
 
-// SetImageCacheState records the image cache reconciler's view of an image.
-func (p *Postgres) SetImageCacheState(ctx context.Context, imageID string, state domain.ImageCacheState) error {
-	_, err := p.pool.Exec(ctx, `
-UPDATE images SET cache_volume = NULLIF($2, ''), cache_status = $3, status = $4, status_message = $5 WHERE id = $1`,
-		imageID, state.CacheVolume, state.CacheStatus, state.Status, state.StatusMessage)
-	return err
+// SetImageCacheState records the image cache reconciler's view of an image, only if the image still has the
+// cache status the reconciler read (from). It reports false when the image was deleted or changed meanwhile.
+func (p *Postgres) SetImageCacheState(ctx context.Context, imageID string, from string, state domain.ImageCacheState) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `
+UPDATE images SET cache_volume = NULLIF($2, ''), cache_status = $3, status = $4, status_message = $5
+WHERE id = $1 AND cache_status = $6`,
+		imageID, state.CacheVolume, state.CacheStatus, state.Status, state.StatusMessage, from)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// ImageCacheVolumes returns the cache volume names that existing images own.
+func (p *Postgres) ImageCacheVolumes(ctx context.Context) (map[string]bool, error) {
+	rows, err := p.pool.Query(ctx, `SELECT cache_volume FROM images WHERE cache_volume IS NOT NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	owned := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		owned[name] = true
+	}
+	return owned, rows.Err()
 }

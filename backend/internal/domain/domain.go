@@ -58,7 +58,7 @@ type Image struct {
 	// "" (no cache: VMs download the URL), Pending, Importing, Ready or Failed. VMs clone a Ready cache.
 	CacheVolume string `json:"cacheVolume,omitempty"`
 	CacheStatus string `json:"cacheStatus"`
-	// StatusMessage explains a Failed status.
+	// StatusMessage explains a Failed status, or why the cache of a Ready image failed (VMs then download it).
 	StatusMessage string `json:"statusMessage,omitempty"`
 }
 

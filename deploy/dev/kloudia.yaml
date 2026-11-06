@@ -40,6 +40,10 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces", "persistentvolumeclaims", "pods", "events", "nodes"]
     verbs: ["get", "list", "watch"]
+  # An image cache's volume is deleted with the image, also when CDI has already removed its DataVolume.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["delete"]
   # VM boot logs come from the virt-launcher pod's guest-console-log container.
   - apiGroups: [""]
     resources: ["pods/log"]

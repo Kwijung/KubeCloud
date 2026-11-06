@@ -35,8 +35,10 @@ func TestBuildImageCacheDataVolume(t *testing.T) {
 		t.Fatalf("unexpected metadata: %#v", meta)
 	}
 	labels := meta["labels"].(map[string]any)
-	if labels["kloudia.io/role"] != "image-cache" || labels["kloudia.io/image-id"] != "public-noble" {
-		t.Fatalf("unexpected labels: %#v", labels)
+	annotations := meta["annotations"].(map[string]any)
+	if labels["kloudia.io/role"] != "image-cache" || annotations["kloudia.io/image-id"] != "public-noble" ||
+		annotations["kloudia.io/source-url"] != image.SourceURL || annotations["cdi.kubevirt.io/storage.bind.immediate.requested"] != "true" {
+		t.Fatalf("unexpected labels %#v / annotations %#v", labels, annotations)
 	}
 	spec := dv["spec"].(map[string]any)
 	if spec["source"].(map[string]any)["http"].(map[string]any)["url"] != image.SourceURL {
@@ -71,35 +73,57 @@ func TestBuildResourcesClonesAReadyImageCache(t *testing.T) {
 }
 
 type fakeImageCacheStore struct {
-	images []domain.Image
-	states map[string]domain.ImageCacheState
+	images  []domain.Image
+	states  map[string]domain.ImageCacheState
+	deleted map[string]bool // images deleted while the reconciler worked
 }
 
-func (s *fakeImageCacheStore) ListImagesNeedingCache(context.Context) ([]domain.Image, error) {
+func (s *fakeImageCacheStore) ListImagesWithCache(context.Context) ([]domain.Image, error) {
 	return s.images, nil
 }
 
-func (s *fakeImageCacheStore) SetImageCacheState(_ context.Context, id string, state domain.ImageCacheState) error {
+func (s *fakeImageCacheStore) SetImageCacheState(_ context.Context, id string, _ string, state domain.ImageCacheState) (bool, error) {
+	if s.deleted[id] {
+		return false, nil
+	}
 	if s.states == nil {
 		s.states = map[string]domain.ImageCacheState{}
 	}
 	s.states[id] = state
-	return nil
+	return true, nil
 }
 
-func dataVolumeObject(name, phase string) *unstructured.Unstructured {
+func (s *fakeImageCacheStore) ImageCacheVolumes(context.Context) (map[string]bool, error) {
+	owned := map[string]bool{}
+	for _, img := range s.images {
+		if !s.deleted[img.ID] {
+			owned[domain.ImageCacheVolumeName(img.ID)] = true
+		}
+	}
+	return owned, nil
+}
+
+func cacheObject(apiVersion, kind, name, uid, sourceURL string, status map[string]any) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "cdi.kubevirt.io/v1beta1", "kind": "DataVolume",
-		"metadata": map[string]any{"name": name, "namespace": "kloudia-vms"},
-		"status":   map[string]any{"phase": phase},
+		"apiVersion": apiVersion, "kind": kind,
+		"metadata": map[string]any{
+			"name": name, "namespace": "kloudia-vms", "uid": uid,
+			"labels":      map[string]any{"kloudia.io/role": "image-cache"},
+			"annotations": map[string]any{"kloudia.io/source-url": sourceURL},
+		},
+		"status": status,
 	}}
 }
 
-func errorEvent(name string) *unstructured.Unstructured {
+func dataVolumeObject(id, uid, phase string) *unstructured.Unstructured {
+	return cacheObject("cdi.kubevirt.io/v1beta1", "DataVolume", "image-"+id, uid, "https://example.com/"+id, map[string]any{"phase": phase})
+}
+
+func errorEvent(name, uid string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1", "kind": "Event",
-		"metadata":       map[string]any{"name": name + ".1", "namespace": "kloudia-vms"},
-		"involvedObject": map[string]any{"kind": "DataVolume", "name": name},
+		"metadata":       map[string]any{"name": name + "." + uid, "namespace": "kloudia-vms"},
+		"involvedObject": map[string]any{"kind": "DataVolume", "name": name, "uid": uid},
 		"type":           "Warning", "reason": "Error", "message": "Unable to connect to http data source: 404",
 		"count": int64(1), "lastTimestamp": "2026-11-07T00:00:00Z",
 	}}
@@ -115,19 +139,35 @@ func TestImageCacheReconcile(t *testing.T) {
 		}
 		return img
 	}
-	store := &fakeImageCacheStore{images: []domain.Image{
-		image("old-ready", "Ready", ""),                             // registered before caching: start a cache, stay Ready
-		image("new-pending", "Importing", domain.ImageCachePending), // just registered: start the import
-		image("done", "Importing", domain.ImageCacheImporting),      // import finished
-		image("broken", "Importing", domain.ImageCacheImporting),    // import keeps failing
-		image("vanished", "Importing", domain.ImageCacheImporting),  // its DataVolume was deleted
-	}}
-	scheme := runtime.NewScheme()
-	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme,
-		map[schema.GroupVersionResource]string{{Version: "v1", Resource: "events"}: "EventList"},
-		dataVolumeObject("image-done", "Succeeded"),
-		dataVolumeObject("image-broken", "ImportInProgress"),
-		errorEvent("image-broken"),
+	store := &fakeImageCacheStore{
+		images: []domain.Image{
+			image("old-ready", "Ready", ""),                                // registered before caching: start a cache, stay Ready
+			image("new-pending", "Importing", domain.ImageCachePending),    // just registered: start the import
+			image("done", "Importing", domain.ImageCacheImporting),         // import finished
+			image("broken", "Importing", domain.ImageCacheImporting),       // import keeps failing
+			image("vanished", "Importing", domain.ImageCacheImporting),     // its DataVolume was deleted
+			image("reregistered", "Importing", domain.ImageCacheImporting), // only old events of an earlier image
+			image("stale", "Importing", domain.ImageCachePending),          // a DataVolume of an earlier image is in the way
+			image("lost", "Ready", domain.ImageCacheReady),                 // its ready volume disappeared
+			image("gone", "Importing", domain.ImageCachePending),           // deleted while its cache was created
+		},
+		deleted: map[string]bool{"gone": true},
+	}
+	stale := dataVolumeObject("stale", "uid-stale", "Succeeded")
+	stale.SetAnnotations(map[string]string{"kloudia.io/source-url": "https://example.com/an-earlier-image"})
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{
+			{Version: "v1", Resource: "events"}:                                     "EventList",
+			{Group: "cdi.kubevirt.io", Version: "v1beta1", Resource: "datavolumes"}: "DataVolumeList",
+			{Version: "v1", Resource: "persistentvolumeclaims"}:                     "PersistentVolumeClaimList",
+		},
+		dataVolumeObject("done", "uid-done", "Succeeded"),
+		dataVolumeObject("broken", "uid-broken", "ImportInProgress"),
+		errorEvent("image-broken", "uid-broken"),
+		dataVolumeObject("reregistered", "uid-new", "ImportInProgress"),
+		errorEvent("image-reregistered", "uid-old"),
+		stale,
+		cacheObject("cdi.kubevirt.io/v1beta1", "DataVolume", "image-orphan", "uid-orphan", "https://example.com/orphan", nil),
 	)
 	applier := &recordingApplier{}
 	cache := NewImageCache("kloudia-vms", "kv", "ReadWriteMany", applier, NewStatusReader("kloudia-vms", "kv", client), store)
@@ -141,26 +181,43 @@ func TestImageCacheReconcile(t *testing.T) {
 		"new-pending": {CacheVolume: "image-new-pending", CacheStatus: domain.ImageCacheImporting, Status: "Importing"},
 		"done":        {CacheVolume: "image-done", CacheStatus: domain.ImageCacheReady, Status: "Ready"},
 		"broken":      {CacheVolume: "image-broken", CacheStatus: domain.ImageCacheFailed, Status: "Failed", StatusMessage: "Unable to connect to http data source: 404"},
+		"lost":        {CacheVolume: "image-lost", CacheStatus: domain.ImageCacheImporting, Status: "Ready"},
 	}
 	for id, w := range want {
 		if got := store.states[id]; got != w {
 			t.Errorf("%s: got %#v, want %#v", id, got, w)
 		}
 	}
-	// The vanished cache is imported again; its recorded state (Importing) does not change, so nothing is written.
-	if _, written := store.states["vanished"]; written {
-		t.Errorf("vanished: no state change to write, got %#v", store.states["vanished"])
+	// Nothing to record: re-imported (vanished), still importing (reregistered: the error event belongs to
+	// an earlier DataVolume), or waiting for the old DataVolume to go (stale).
+	for _, id := range []string{"vanished", "reregistered", "stale"} {
+		if got, written := store.states[id]; written {
+			t.Errorf("%s: expected no state change, got %#v", id, got)
+		}
 	}
+
 	applied := map[string]bool{}
 	for _, r := range applier.resources {
 		applied[r["metadata"].(map[string]any)["name"].(string)] = true
 	}
-	for _, name := range []string{"image-old-ready", "image-new-pending", "image-vanished"} {
+	for _, name := range []string{"image-old-ready", "image-new-pending", "image-vanished", "image-lost", "image-gone"} {
 		if !applied[name] {
 			t.Errorf("expected %s to be imported, applied %v", name, applied)
 		}
 	}
-	if len(applier.deletedResources) != 1 || applier.deletedResources[0]["metadata"].(map[string]any)["name"] != "image-broken" {
-		t.Errorf("the failed import must be removed so it stops retrying, got %#v", applier.deletedResources)
+	if applied["image-stale"] {
+		t.Error("a stale DataVolume must be removed before importing again")
+	}
+	deleted := map[string]bool{}
+	for _, r := range applier.deletedResources {
+		deleted[r["kind"].(string)+"/"+r["metadata"].(map[string]any)["name"].(string)] = true
+	}
+	for _, name := range []string{"image-broken", "image-stale", "image-gone", "image-orphan"} {
+		if !deleted["DataVolume/"+name] || !deleted["PersistentVolumeClaim/"+name] {
+			t.Errorf("expected %s's DataVolume and volume to be deleted, deleted %v", name, deleted)
+		}
+	}
+	if deleted["DataVolume/image-done"] || deleted["DataVolume/image-reregistered"] {
+		t.Errorf("caches in use must stay, deleted %v", deleted)
 	}
 }

@@ -7,8 +7,10 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/kloudia/kloudia/backend/internal/domain"
+	"github.com/kloudia/kloudia/backend/internal/imageprobe"
 	storepkg "github.com/kloudia/kloudia/backend/internal/store"
 )
 
@@ -43,10 +45,16 @@ func createImage(w http.ResponseWriter, r *http.Request, prober ImageProber, cac
 		return
 	}
 	if prober != nil {
-		// A failed probe still registers the image; VM creation then skips the disk size check.
-		if size, err := prober.VirtualSize(r.Context(), input.SourceURL); err == nil {
+		// An image that is not qcow2 still registers with an unknown size (no disk size check, no cache). A URL
+		// that cannot be fetched is refused now rather than failing every VM later.
+		size, err := prober.VirtualSize(r.Context(), input.SourceURL)
+		switch {
+		case err == nil:
 			input.VirtualSizeBytes = &size
-		} else {
+		case errors.Is(err, imageprobe.ErrUnreachable):
+			writeError(w, http.StatusBadRequest, "IMAGE_SOURCE_UNREACHABLE", "the image url cannot be fetched: "+err.Error())
+			return
+		default:
 			log.Printf("image %q: virtual size unknown: %v", input.Name, err)
 		}
 	}
@@ -84,6 +92,10 @@ func deleteImageCache(ctx context.Context, cache ImageCache, imageID string, del
 	if deleteErr != nil || cache == nil {
 		return
 	}
+	// Not tied to the request: a client hanging up must not leave the cache behind. The reconciler also
+	// sweeps caches whose image is gone.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
 	if err := cache.Delete(ctx, imageID); err != nil {
 		log.Printf("delete cache of image %s: %v", imageID, err)
 	}

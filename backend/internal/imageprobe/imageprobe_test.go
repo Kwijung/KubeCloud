@@ -65,7 +65,10 @@ func TestVirtualSizeReportsHTTPErrors(t *testing.T) {
 	server := httptest.NewServer(http.NotFoundHandler())
 	defer server.Close()
 
-	if _, err := New().VirtualSize(context.Background(), server.URL); err == nil || errors.Is(err, ErrUnknownFormat) {
-		t.Fatalf("expected an HTTP error, got %v", err)
+	if _, err := New().VirtualSize(context.Background(), server.URL); !errors.Is(err, ErrUnreachable) {
+		t.Fatalf("expected ErrUnreachable for a 404, got %v", err)
+	}
+	if _, err := New().VirtualSize(context.Background(), "http://127.0.0.1:1/none.img"); !errors.Is(err, ErrUnreachable) {
+		t.Fatalf("expected ErrUnreachable for a refused connection, got %v", err)
 	}
 }

@@ -740,9 +740,9 @@ func TestPostgresImageCacheStates(t *testing.T) {
 		t.Fatalf("expected ErrImageNotReady while importing, got %v", err)
 	}
 
-	needing, err := db.ListImagesNeedingCache(ctx)
+	needing, err := db.ListImagesWithCache(ctx)
 	if err != nil {
-		t.Fatalf("list images needing cache: %v", err)
+		t.Fatalf("list images with cache: %v", err)
 	}
 	ids := map[string]bool{}
 	for _, img := range needing {
@@ -752,8 +752,16 @@ func TestPostgresImageCacheStates(t *testing.T) {
 		t.Fatalf("expected the cached image and not the unsized one, got %v", ids)
 	}
 
-	if err := db.SetImageCacheState(ctx, cached.ID, domain.ImageCacheState{CacheVolume: cached.CacheVolume, CacheStatus: domain.ImageCacheReady, Status: "Ready"}); err != nil {
-		t.Fatalf("set cache state: %v", err)
+	ready := domain.ImageCacheState{CacheVolume: cached.CacheVolume, CacheStatus: domain.ImageCacheReady, Status: "Ready"}
+	if saved, err := db.SetImageCacheState(ctx, cached.ID, domain.ImageCacheImporting, ready); err != nil || saved {
+		t.Fatalf("an update from a stale cache status must not apply, got saved=%v err=%v", saved, err)
+	}
+	if saved, err := db.SetImageCacheState(ctx, cached.ID, domain.ImageCachePending, ready); err != nil || !saved {
+		t.Fatalf("set cache state: saved=%v err=%v", saved, err)
+	}
+	owned, err := db.ImageCacheVolumes(ctx)
+	if err != nil || !owned[cached.CacheVolume] {
+		t.Fatalf("the image owns its cache volume, got %v (%v)", owned, err)
 	}
 	plan, err := db.CreateVirtualMachine(ctx, "platform", domain.CreateVirtualMachineInput{Name: "cache-user", ImageID: cached.ID, FlavorID: "small"})
 	if err != nil {
@@ -763,10 +771,22 @@ func TestPostgresImageCacheStates(t *testing.T) {
 	if plan.Image.CacheStatus != domain.ImageCacheReady || plan.Image.CacheVolume != "image-public-cached-cirros" {
 		t.Fatalf("the provisioning plan must carry the cache, got %#v", plan.Image)
 	}
-	needing, _ = db.ListImagesNeedingCache(ctx)
-	for _, img := range needing {
-		if img.ID == cached.ID {
-			t.Fatal("a ready cache needs nothing more")
-		}
+	// A 1.1GiB image needs a ~1.17GiB disk, but its cache is 2GiB and a clone cannot be smaller than that.
+	bigSize := int64(1181116006)
+	big, err := db.CreatePublicImage(ctx, domain.CreateImageInput{Name: "Cache Size Test", OSType: "linux", SourceURL: "https://example.com/b.img", VirtualSizeBytes: &bigSize, Cache: true})
+	if err != nil {
+		t.Fatalf("create image: %v", err)
+	}
+	defer func() { _ = db.DeletePublicImage(ctx, big.ID) }()
+	mid, err := db.CreateFlavor(ctx, domain.FlavorInput{Name: "mid-cache-test", CPU: 1, MemoryBytes: 256 << 20, RootDiskBytes: 1536 << 20})
+	if err != nil {
+		t.Fatalf("create flavor: %v", err)
+	}
+	defer func() { _ = db.DeleteFlavor(ctx, mid.ID) }()
+	if saved, err := db.SetImageCacheState(ctx, big.ID, domain.ImageCachePending, domain.ImageCacheState{CacheVolume: big.CacheVolume, CacheStatus: domain.ImageCacheReady, Status: "Ready"}); err != nil || !saved {
+		t.Fatalf("set cache state: %v %v", saved, err)
+	}
+	if _, err := db.CreateVirtualMachine(ctx, "platform", domain.CreateVirtualMachineInput{Name: "cache-mid", ImageID: big.ID, FlavorID: mid.ID}); !errors.Is(err, ErrFlavorDiskTooSmall) {
+		t.Fatalf("a 1.5GiB disk cannot clone a 2GiB cache, got %v", err)
 	}
 }

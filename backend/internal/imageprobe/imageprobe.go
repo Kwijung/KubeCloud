@@ -15,6 +15,9 @@ import (
 // Raw and compressed images fall here.
 var ErrUnknownFormat = errors.New("image is not qcow2")
 
+// ErrUnreachable is returned when the image URL cannot be fetched: a network error or an HTTP error status.
+var ErrUnreachable = errors.New("image url cannot be fetched")
+
 // qcow2 header: magic "QFI\xfb" at offset 0, big-endian virtual size in bytes at offset 24.
 const qcow2HeaderLen = 32
 
@@ -37,11 +40,11 @@ func (p *Prober) VirtualSize(ctx context.Context, url string) (int64, error) {
 	req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", qcow2HeaderLen-1))
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("%w: %v", ErrUnreachable, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		return 0, fmt.Errorf("fetch image header: %s", resp.Status)
+		return 0, fmt.Errorf("%w: %s", ErrUnreachable, resp.Status)
 	}
 	// A server that ignores Range sends the whole file; only the header is read before closing.
 	header := make([]byte, qcow2HeaderLen)
