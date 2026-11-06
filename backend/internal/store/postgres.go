@@ -130,6 +130,10 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
+-- The Ubuntu seed image was seeded as Importing, a state nothing ever moved it out of. Images are Ready when
+-- registered; CDI downloads them per VM.
+UPDATE images SET status = 'Ready' WHERE id = 'data-ubuntu-22' AND status = 'Importing';
+
 -- NULL for VPCs created before VPC CIDRs existed; their subnets are not range-checked.
 ALTER TABLE networks
   ADD COLUMN IF NOT EXISTS cidr text;
@@ -155,7 +159,7 @@ SET name = EXCLUDED.name,
 INSERT INTO images (id, project_id, name, os_type, source_url, status, scope)
 VALUES
   ('platform-cirros', NULL, 'CirrOS 0.6.2', 'linux', 'https://download.cirros-cloud.net/0.6.2/cirros-0.6.2-x86_64-disk.img', 'Ready', 'public'),
-  ('data-ubuntu-22', 'data', 'Ubuntu 22.04', 'linux', 'https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img', 'Importing', 'project')
+  ('data-ubuntu-22', 'data', 'Ubuntu 22.04', 'linux', 'https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img', 'Ready', 'project')
 ON CONFLICT (id) DO NOTHING;
 `)
 	return err

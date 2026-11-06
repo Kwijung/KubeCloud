@@ -89,6 +89,7 @@ export const messages = {
     imageActionFailed: "이미지 요청 실패",
     errorImageNameTaken: "같은 이름의 이미지가 이미 있습니다",
     errorFlavorDiskTooSmall: "선택한 사양의 루트 디스크가 이미지보다 작습니다. 더 큰 사양을 고르세요",
+    errorVpcNetworkingUnavailable: "이 클러스터에는 VPC 네트워크가 없습니다. 서브넷 없이 만드세요",
     flavorDiskTooSmall: "디스크 부족",
     imageDiskSize: "디스크 {size} GiB",
     imageDiskSizeUnknown: "디스크 크기 알 수 없음",
@@ -236,6 +237,7 @@ export const messages = {
     imageActionFailed: "Image request failed",
     errorImageNameTaken: "An image with this name already exists",
     errorFlavorDiskTooSmall: "The flavor's root disk is smaller than the image. Pick a larger flavor",
+    errorVpcNetworkingUnavailable: "This cluster has no VPC networking. Create the VM without a subnet",
     flavorDiskTooSmall: "disk too small",
     imageDiskSize: "{size} GiB disk",
     imageDiskSizeUnknown: "disk size unknown",
@@ -340,6 +342,8 @@ export function translateApiError(error: unknown, language: Language, fallback: 
       return t.errorInvalidFlavor;
     case "INVALID_SUBNET":
       return t.errorInvalidSubnet;
+    case "VPC_NETWORKING_UNAVAILABLE":
+      return t.errorVpcNetworkingUnavailable;
     case "FLAVOR_DISK_TOO_SMALL":
       return t.errorFlavorDiskTooSmall;
     case "IMAGE_NAME_TAKEN":

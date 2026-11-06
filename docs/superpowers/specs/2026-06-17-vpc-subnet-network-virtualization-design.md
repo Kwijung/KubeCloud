@@ -73,7 +73,8 @@ Kloudia 포털에서 사용자가 **VPC와 서브넷을 직접 생성(생성 시
 - VPC → kube-ovn `Vpc` CR. cluster-scoped, 격리된 가상 라우터이므로 VPC 간 CIDR 중첩이 허용된다.
 - Subnet → kube-ovn `Subnet` CR. `vpc`(소속 VPC), `cidrBlock`, `gateway`, `protocol: IPv4`, `provider`(NAD 연결자) 지정. cluster-scoped.
 - 각 Subnet마다 VM 네임스페이스(`KLOUDIA_KUBEVIRT_NAMESPACE`, 기본 `kloudia-vms`)에 `NetworkAttachmentDefinition`을 생성하고, kube-ovn Subnet의 `provider`가 이 NAD를 가리키게 한다.
-- VM은 virt-launcher 파드가 Cilium 기본망을 유지(파드 스케줄링 요건)하되, **게스트 VM에는 pod network를 노출하지 않고** 해당 NAD(=VPC 서브넷)만 게스트 NIC로 바인딩한다(`bridge`). 결과적으로 게스트 OS는 서브넷 CIDR의 IP를 가진 NIC 1개만 보게 된다.
+- 서브넷에 붙는 VM은 해당 NAD(=VPC 서브넷)를 virt-launcher 파드의 **기본 네트워크**로 쓰고, 게스트 NIC 1개로 바인딩한다(`bridge`). 파드에는 Cilium 인터페이스가 붙지 않는다. KubeVirt의 DHCP는 기본 네트워크에 대해서만 게이트웨이를 알려주므로, 보조 네트워크로 붙이면 게스트에 기본 경로가 생기지 않는다. 게스트 OS는 서브넷 CIDR의 IP와 서브넷 게이트웨이를 기본 경로로 받는다.
+- VPC 안에서는 클러스터 DNS 서비스(10.96.0.10)에 닿지 않는다. 서브넷 VM에는 `KLOUDIA_VM_DNS_SERVERS`의 DNS 서버를 준다(VM 파드의 `dnsPolicy: None` + `dnsConfig`, KubeVirt가 DHCP로 게스트에 전달). 비어 있으면 클러스터 DNS를 그대로 쓴다. public 서브넷은 NAT 게이트웨이를 거쳐 그 서버에 닿고, private 서브넷은 외부 DNS를 쓸 수 없다.
 - IP는 kube-ovn IPAM이 서브넷 CIDR에서 자동 할당한다.
 - **서브넷 타입에 따른 외부 통신**:
   - private 서브넷: 외부 egress 경로 없음. 같은 VPC 내 통신만 가능.
@@ -198,9 +199,11 @@ DELETE /api/v1/projects/{projectID}/networks/{networkID}/subnets/{subnetID}
   - 서브넷 생성(public) → Subnet CR + NAD, (앵커면) `VpcNatGateway`, `IptablesEIP` + `IptablesSnatRule`(서브넷 CIDR을 EIP로 SNAT, 인바운드 없음)을 apply한 뒤 Vpc egress 정책을 public 서브넷 전체 기준으로 다시 쓴다. SNAT 규칙이 생긴 다음에 경로를 열어 SNAT 없이 나가는 트래픽이 없게 한다.
   - 서브넷 삭제(public) → Vpc egress 정책을 남은 public 서브넷 기준으로 먼저 다시 쓰고, SNAT 규칙·EIP를 지운다. 남은 public 서브넷이 없으면 `VpcNatGateway`도 지운다. 이어서 NAD delete + Subnet CR delete. 앵커는 마지막 public 서브넷일 때만 삭제되므로 게이트웨이는 그때만 사라진다.
   - VPC 삭제 → `VpcNatGateway` delete(남아 있을 경우 대비) 후 Vpc CR delete.
+  - 한 VPC 안의 서브넷 프로비저닝(public 서브넷 목록을 읽고 Vpc egress 정책을 다시 쓰는 구간)은 VPC 단위로 직렬화한다. 동시에 들어온 두 요청이 서로의 서브넷을 빠뜨린 목록으로 정책을 덮어쓰지 않게 하기 위해서다. API는 레플리카 1개로 돌기 때문에 프로세스 안의 잠금으로 충분하다. 레플리카를 늘리면 DB 잠금(예: VPC 행 `SELECT … FOR UPDATE`)으로 바꿔야 한다.
   - Vpc CR 변경은 전체 update가 아닌 merge patch로 한다. kube-ovn이 붙인 finalizer(`kubeovn.io/kube-ovn-controller`)와 annotation을 덮어쓰지 않기 위해서다.
 - `manifest.go BuildResources`: plan에 Subnet이 있으면 VM template에 다음을 주입한다.
-  - `spec.template.spec.networks`: multus 네트워크 1개 (`multus.networkName: <ns>/<nad>`), pod network 미포함.
+  - `spec.template.spec.networks`: multus 네트워크 1개 (`multus.networkName: <ns>/<nad>`, `default: true`), pod network 미포함.
+  - `KLOUDIA_VM_DNS_SERVERS`가 있으면 `spec.template.spec.dnsPolicy: None`과 `dnsConfig.nameservers`.
   - `spec.template.spec.domain.devices.interfaces`: 해당 네트워크에 `bridge` 바인딩 1개.
   - Subnet이 없으면(레거시/비활성) 기존 동작(기본 pod network) 유지.
 - 비활성 모드(`KLOUDIA_KUBEVIRT_ENABLED=false`)에서는 기존 VM 흐름과 동일하게 DB 레코드만 기록(noop applier)한다.
@@ -246,7 +249,9 @@ DELETE /api/v1/projects/{projectID}/networks/{networkID}/subnets/{subnetID}
 ## 12. 미해결 확인 사항
 
 - nested virtualization 환경(테스트 클러스터가 VM 위에서 실행)에서 kube-ovn Geneve 오버레이 MTU 적정값.
-- 게이트웨이가 뜬 직후 약 10초 동안 앵커 서브넷에서만 egress가 실패했다가 회복된다(다른 public 서브넷은 즉시 동작). 게이트웨이 LAN 포트와 같은 서브넷이라 생기는 수렴 지연으로 보이나 원인은 확인하지 않았다.
 - `lanIp`는 VM보다 먼저 만들어지는 게이트웨이가 차지하고 kube-ovn IPAM은 CIDR 앞쪽부터 할당하므로 충돌하지 않는다. 다만 `excludeIps`로 예약한 것은 아니다.
-- 경로 정책은 요청 시점의 public 서브넷 목록으로 통째로 다시 쓴다. 같은 VPC에 public 서브넷을 동시에 만들거나 지우면 나중에 쓴 쪽이 다른 쪽 CIDR을 빠뜨릴 수 있다.
-- 검증은 KubeVirt VM이 아닌, 같은 NAD를 붙인 파드로 했다. VM의 bridge 바인딩에서도 같은지는 확인이 필요하다.
+
+## 13. 알려진 동작
+
+- VPC에 NAT 게이트웨이가 새로 생기면, 게이트웨이 파드가 Ready가 된 뒤 약 10초 동안 그 VPC의 public 서브넷에서 외부로 나가지 못한다. EIP와 SNAT 규칙은 게이트웨이와 함께 만들어져 곧바로 ready이고, 이미 떠 있는 게이트웨이를 거치는 새 파드는 첫 패킷부터 나간다. 즉 VPC의 첫 public 서브넷을 만들 때 한 번만 생기는 게이트웨이 준비 시간이다. VM은 부팅에 이보다 오래 걸려 영향이 없으므로 기다리는 처리는 넣지 않는다.
+- 검증: 파드와 KubeVirt VM 모두로 확인했다(같은 VPC 서브넷 간 통신, public 서브넷의 SNAT egress와 DNS, private 서브넷 차단).

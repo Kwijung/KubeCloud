@@ -163,3 +163,29 @@ func TestProvisionerKeepsClusterDNSWhenNoServersConfigured(t *testing.T) {
 		t.Fatalf("expected no dnsConfig without configured servers, got %#v", spec["dnsConfig"])
 	}
 }
+
+func TestProvisionerUsesConfiguredDiskAccessMode(t *testing.T) {
+	plan := domain.VirtualMachineProvisioningPlan{
+		VirtualMachine: domain.VirtualMachine{ID: "platform-web-01", ProjectID: "platform", Name: "web-01"},
+		Image:          domain.Image{SourceURL: "https://example.invalid/cirros.img"},
+		Flavor:         domain.Flavor{CPU: 1, MemoryBytes: 512 * 1024 * 1024, RootDiskBytes: 2 * 1024 * 1024 * 1024},
+	}
+	accessModes := func(t *testing.T, configure func(*Provisioner)) []any {
+		t.Helper()
+		applier := &recordingApplier{}
+		provisioner := NewProvisioner("kloudia-vms", "test-delete", applier)
+		configure(provisioner)
+		if err := provisioner.CreateVirtualMachine(context.Background(), plan); err != nil {
+			t.Fatalf("create virtual machine: %v", err)
+		}
+		return applier.resources[0]["spec"].(map[string]any)["pvc"].(map[string]any)["accessModes"].([]any)
+	}
+
+	if modes := accessModes(t, func(*Provisioner) {}); len(modes) != 1 || modes[0] != "ReadWriteOnce" {
+		t.Fatalf("expected the ReadWriteOnce default, got %#v", modes)
+	}
+	modes := accessModes(t, func(p *Provisioner) { p.SetDiskAccessMode("ReadWriteMany") })
+	if len(modes) != 1 || modes[0] != "ReadWriteMany" {
+		t.Fatalf("expected ReadWriteMany, got %#v", modes)
+	}
+}

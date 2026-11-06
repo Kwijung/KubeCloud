@@ -271,6 +271,15 @@ func TestPostgresCreateVirtualMachineReturnsCatalogSentinels(t *testing.T) {
 		t.Fatalf("apply schema: %v", err)
 	}
 
+	// No registered image is ever left Importing, so the test adds one to check the rule.
+	if _, err := db.pool.Exec(ctx, `
+INSERT INTO images (id, project_id, name, os_type, source_url, status, scope)
+VALUES ('data-importing-fixture', 'data', 'Importing fixture', 'linux', 'https://example.com/x.img', 'Importing', 'project')
+ON CONFLICT (id) DO NOTHING`); err != nil {
+		t.Fatalf("insert importing fixture: %v", err)
+	}
+	defer func() { _, _ = db.pool.Exec(ctx, `DELETE FROM images WHERE id = 'data-importing-fixture'`) }()
+
 	cases := []struct {
 		name    string
 		project string
@@ -279,7 +288,7 @@ func TestPostgresCreateVirtualMachineReturnsCatalogSentinels(t *testing.T) {
 	}{
 		{"unknown image", "platform", domain.CreateVirtualMachineInput{Name: "x-1", ImageID: "nope", FlavorID: "small"}, ErrImageNotFound},
 		{"image of another project", "platform", domain.CreateVirtualMachineInput{Name: "x-1", ImageID: "data-ubuntu-22", FlavorID: "small"}, ErrImageNotFound},
-		{"importing image", "data", domain.CreateVirtualMachineInput{Name: "x-1", ImageID: "data-ubuntu-22", FlavorID: "medium"}, ErrImageNotReady},
+		{"importing image", "data", domain.CreateVirtualMachineInput{Name: "x-1", ImageID: "data-importing-fixture", FlavorID: "medium"}, ErrImageNotReady},
 		{"unknown flavor", "platform", domain.CreateVirtualMachineInput{Name: "x-1", ImageID: "platform-cirros", FlavorID: "nope"}, ErrFlavorNotFound},
 	}
 	for _, tc := range cases {
@@ -499,5 +508,45 @@ func TestPostgresPublicImages(t *testing.T) {
 	}
 	if err := db.DeletePublicImage(ctx, "data-ubuntu-22"); !errors.Is(err, ErrImageNotFound) {
 		t.Fatalf("the admin route must not delete a project image, got %v", err)
+	}
+}
+
+func TestPostgresSeedImagesAreReady(t *testing.T) {
+	databaseURL := os.Getenv("KLOUDIA_STORE_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("KLOUDIA_STORE_TEST_DATABASE_URL is required for store integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	db, err := NewPostgres(databaseURL)
+	if err != nil {
+		t.Fatalf("new postgres: %v", err)
+	}
+	defer db.Close()
+	// Simulate a database seeded before the fix: the Ubuntu seed image stuck in Importing.
+	if err := db.ApplySchema(ctx); err != nil {
+		t.Fatalf("apply schema: %v", err)
+	}
+	if _, err := db.pool.Exec(ctx, `UPDATE images SET status = 'Importing' WHERE id = 'data-ubuntu-22'`); err != nil {
+		t.Fatalf("simulate old seed: %v", err)
+	}
+	if err := db.ApplySchema(ctx); err != nil {
+		t.Fatalf("re-apply schema: %v", err)
+	}
+	images, err := db.ListImages(ctx, "data")
+	if err != nil {
+		t.Fatalf("list images: %v", err)
+	}
+	found := false
+	for _, image := range images {
+		if image.ID == "data-ubuntu-22" {
+			found = true
+			if image.Status != "Ready" {
+				t.Fatalf("seeded Ubuntu image must be Ready, got %q", image.Status)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("seeded Ubuntu image data-ubuntu-22 is missing")
 	}
 }

@@ -285,3 +285,27 @@ func TestCreateVirtualMachineMapsCatalogErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateVirtualMachineRejectsSubnetWithoutVPCNetworking(t *testing.T) {
+	store := &fakeCatalogStore{}
+	provisioner := &recordingProvisioner{}
+	router := NewRouterWithDependencies(Dependencies{Version: "test", Store: store, Provisioner: provisioner, VPCNetworkingUnavailable: true})
+	body := bytes.NewBufferString(`{"name":"web-1","imageId":"platform-cirros","flavorId":"small","subnetId":"platform-app-web"}`)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/projects/platform/vms", body))
+
+	if rec.Code != http.StatusConflict || errorCode(t, rec) != "VPC_NETWORKING_UNAVAILABLE" {
+		t.Fatalf("expected 409 VPC_NETWORKING_UNAVAILABLE, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(store.createInputs) != 0 || len(provisioner.plans) != 0 {
+		t.Fatalf("nothing may be stored or provisioned, got inputs=%#v plans=%#v", store.createInputs, provisioner.plans)
+	}
+
+	// A VM on the pod network is still allowed.
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/projects/platform/vms", bytes.NewBufferString(`{"name":"web-2","imageId":"platform-cirros","flavorId":"small"}`)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 without a subnet, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
