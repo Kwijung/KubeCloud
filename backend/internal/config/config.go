@@ -64,7 +64,7 @@ func (c Config) ReservedPrefixes() ([]netip.Prefix, error) {
 }
 
 // DiskAccessMode validates KubeVirtDiskAccessMode. ReadWriteMany needs a storage class that supports it,
-// such as NFS, and makes VMs live-migratable.
+// such as NFS, and lets KubeVirt live-migrate VMs.
 func (c Config) DiskAccessMode() (string, error) {
 	switch c.KubeVirtDiskAccessMode {
 	case "ReadWriteOnce", "ReadWriteMany":

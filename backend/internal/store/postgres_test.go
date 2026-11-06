@@ -278,6 +278,7 @@ VALUES ('data-importing-fixture', 'data', 'Importing fixture', 'linux', 'https:/
 ON CONFLICT (id) DO NOTHING`); err != nil {
 		t.Fatalf("insert importing fixture: %v", err)
 	}
+	defer func() { _, _ = db.pool.Exec(ctx, `DELETE FROM images WHERE id = 'data-importing-fixture'`) }()
 
 	cases := []struct {
 		name    string
@@ -536,9 +537,16 @@ func TestPostgresSeedImagesAreReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list images: %v", err)
 	}
+	found := false
 	for _, image := range images {
-		if image.ID == "data-ubuntu-22" && image.Status != "Ready" {
-			t.Fatalf("seeded Ubuntu image must be Ready, got %q", image.Status)
+		if image.ID == "data-ubuntu-22" {
+			found = true
+			if image.Status != "Ready" {
+				t.Fatalf("seeded Ubuntu image must be Ready, got %q", image.Status)
+			}
 		}
+	}
+	if !found {
+		t.Fatal("seeded Ubuntu image data-ubuntu-22 is missing")
 	}
 }

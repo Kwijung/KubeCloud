@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -29,25 +30,28 @@ func TestVPCEgressDNSAndLiveMigratableDisks(t *testing.T) {
 	t.Cleanup(func() { e.call(t, http.MethodDelete, "/projects/"+project+"/networks/"+networkID, nil, nil) })
 
 	subnetPath := "/projects/" + project + "/networks/" + networkID + "/subnets"
+	// Registered after the VPC's cleanup and before any subnet exists, so it runs before the VPC's cleanup
+	// (last-in first-out) and covers subnets created by a test that stops half way.
+	t.Cleanup(func() { e.deleteSubnets(t, subnetPath) })
+
 	var wg sync.WaitGroup
-	for _, s := range []struct{ name, cidr string }{{"pub-a", "1"}, {"pub-b", "2"}} {
+	statuses := make([]int, 2)
+	for i, s := range []struct{ name, third string }{{"pub-a", "1"}, {"pub-b", "2"}} {
 		wg.Add(1)
-		go func(sname, third string) {
+		go func(i int, sname, third string) {
 			defer wg.Done()
-			e.mustCall(t, http.MethodPost, subnetPath, map[string]string{
+			statuses[i] = e.call(t, http.MethodPost, subnetPath, map[string]string{
 				"name": sname, "cidr": fmt.Sprintf("10.%d.%s.0/24", octet, third), "type": "public",
-			}, http.StatusCreated, nil)
-		}(s.name, s.cidr)
+			}, nil)
+		}(i, s.name, s.third)
 	}
 	wg.Wait()
+	if statuses[0] != http.StatusCreated || statuses[1] != http.StatusCreated {
+		t.Fatalf("concurrent public subnet creates returned %v, want 201 for both", statuses)
+	}
 	e.mustCall(t, http.MethodPost, subnetPath, map[string]string{
 		"name": "priv", "cidr": fmt.Sprintf("10.%d.3.0/24", octet), "type": "private",
 	}, http.StatusCreated, nil)
-	// Subnets go before the VPC; registered after it, these cleanups run first.
-	for _, s := range []string{"priv", "pub-b", "pub-a"} {
-		id := networkID + "-" + s
-		t.Cleanup(func() { e.call(t, http.MethodDelete, subnetPath+"/"+id, nil, nil) })
-	}
 
 	vpc, err := e.get(t, gvrVPC, "", "kloudia-vpc-"+networkID)
 	if err != nil {
@@ -63,14 +67,22 @@ func TestVPCEgressDNSAndLiveMigratableDisks(t *testing.T) {
 	e.waitRunning(t, project, pubVM)
 	e.waitRunning(t, project, privVM)
 
+	// The disk checks apply when the deployment uses ReadWriteMany root disks (KLOUDIA_KUBEVIRT_DISK_ACCESS_MODE).
+	wantMode := os.Getenv("KLOUDIA_E2E_DISK_ACCESS_MODE")
 	for _, id := range []string{pubVM, privVM} {
+		if wantMode == "" {
+			break
+		}
 		dv, err := e.get(t, gvrDV, vmNamespace, id+"-rootdisk")
 		if err != nil {
 			t.Fatalf("datavolume %s: %v", id, err)
 		}
 		modes, _, _ := unstructured.NestedStringSlice(dv.Object, "spec", "pvc", "accessModes")
-		if len(modes) != 1 || modes[0] != "ReadWriteMany" {
-			t.Errorf("%s root disk access modes = %v, want [ReadWriteMany]", id, modes)
+		if len(modes) != 1 || modes[0] != wantMode {
+			t.Errorf("%s root disk access modes = %v, want [%s]", id, modes, wantMode)
+		}
+		if wantMode != "ReadWriteMany" {
+			continue
 		}
 		vmi, err := e.get(t, gvrVMI, vmNamespace, id)
 		if err != nil {
@@ -83,9 +95,8 @@ func TestVPCEgressDNSAndLiveMigratableDisks(t *testing.T) {
 
 	pub := e.openConsole(t, project, pubVM)
 	pub.login()
-	if rc, out := pub.run("ip route | grep default", 10*time.Second); rc != 0 {
-		t.Errorf("public VM has no default route: %s", out)
-	}
+	// The login prompt appears a few seconds before DHCP finishes (dhcpcd probes the address first).
+	pub.waitForDefaultRoute()
 	if rc, out := pub.run("ping -c 3 -W 3 8.8.8.8", 30*time.Second); rc != 0 {
 		t.Errorf("public VM cannot reach the internet: %s", out)
 	}
@@ -95,9 +106,36 @@ func TestVPCEgressDNSAndLiveMigratableDisks(t *testing.T) {
 
 	priv := e.openConsole(t, project, privVM)
 	priv.login()
+	priv.waitForDefaultRoute()
+	// The private VM has a working network inside the VPC ...
+	if rc, out := priv.run(fmt.Sprintf("ping -c 2 -W 2 10.%d.3.1", octet), 30*time.Second); rc != 0 {
+		t.Errorf("private VM cannot reach its subnet gateway: %s", out)
+	}
+	// ... but no way out of it.
 	if rc, out := priv.run("ping -c 2 -W 2 8.8.8.8", 30*time.Second); rc == 0 {
 		t.Errorf("private VM must not reach the internet: %s", out)
 	}
+}
+
+// deleteSubnets deletes every subnet of a VPC. The public subnet hosting the NAT gateway can only go last,
+// and which one that is depends on creation order, so it retries until none are left.
+func (e *env) deleteSubnets(t *testing.T, subnetPath string) {
+	t.Helper()
+	for pass := 0; pass < 4; pass++ {
+		var resp struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		e.call(t, http.MethodGet, subnetPath, nil, &resp)
+		if len(resp.Data) == 0 {
+			return
+		}
+		for _, s := range resp.Data {
+			e.call(t, http.MethodDelete, subnetPath+"/"+s.ID, nil, nil)
+		}
+	}
+	t.Errorf("subnets under %s were not all deleted", subnetPath)
 }
 
 func conditionTrue(obj *unstructured.Unstructured, conditionType string) bool {

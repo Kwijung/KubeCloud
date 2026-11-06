@@ -141,6 +141,15 @@ func overlappingReservedCIDR(cidr string, reserved []netip.Prefix) (string, bool
 
 // publicSubnetsOf lists the public subnets in subnet's VPC, leaving out excludeID. Private subnets do not
 // touch the NAT gateway, so they get nil without a lookup.
+// rollbackSubnet removes a subnet record whose provisioning failed. The caller holds the VPC lock from
+// before the record was saved, so no later public subnet exists yet and the store does not refuse the
+// delete for hosting the NAT gateway.
+func rollbackSubnet(ctx context.Context, store Store, subnet domain.Subnet) {
+	if _, err := store.DeleteSubnet(ctx, subnet.ProjectID, subnet.ID); err != nil {
+		log.Printf("roll back subnet %s: %v", subnet.ID, err)
+	}
+}
+
 func publicSubnetsOf(ctx context.Context, store Store, subnet domain.Subnet, excludeID string) ([]domain.Subnet, error) {
 	if subnet.Type != "public" {
 		return nil, nil
@@ -549,6 +558,12 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			}
 			return
 		}
+		unlock, err := locks.lock(r.Context(), network.ID)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "NETWORK_BUSY", "the vpc is busy; try again")
+			return
+		}
+		defer unlock()
 		if _, err := store.DeleteNetwork(r.Context(), projectID, networkID); err != nil {
 			switch {
 			case errors.Is(err, storepkg.ErrNotFound):
@@ -609,6 +624,12 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			}
 			return
 		}
+		unlock, err := locks.lock(r.Context(), network.ID)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "NETWORK_BUSY", "the vpc is busy; try again")
+			return
+		}
+		defer unlock()
 		subnet, err := store.CreateSubnet(r.Context(), projectID, networkID, request.Name, request.CIDR, request.Type, request.Gateway)
 		if err != nil {
 			switch {
@@ -625,16 +646,15 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			}
 			return
 		}
-		unlock := locks.lock(network.ID)
-		defer unlock()
 		publicSubnets, err := publicSubnetsOf(r.Context(), store, subnet, "")
 		if err != nil {
-			_, _ = store.DeleteSubnet(r.Context(), projectID, subnet.ID)
+			rollbackSubnet(r.Context(), store, subnet)
 			writeError(w, http.StatusInternalServerError, "SUBNET_CREATE_FAILED", "failed to create subnet")
 			return
 		}
 		if err := networkProvisioner.CreateSubnet(r.Context(), network.OVNVPCName, subnet, publicSubnets); err != nil {
-			_, _ = store.DeleteSubnet(r.Context(), projectID, subnet.ID)
+			log.Printf("provision subnet %s: %v", subnet.ID, err)
+			rollbackSubnet(r.Context(), store, subnet)
 			writeError(w, http.StatusBadGateway, "SUBNET_PROVISION_FAILED", "failed to provision subnet")
 			return
 		}
@@ -669,7 +689,11 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 		}
 		// The store rejects deleting the NAT gateway anchor while other public subnets remain, so the
 		// gateway goes only with the VPC's last public subnet.
-		unlock := locks.lock(network.ID)
+		unlock, err := locks.lock(r.Context(), network.ID)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "NETWORK_BUSY", "the vpc is busy; try again")
+			return
+		}
 		defer unlock()
 		remainingPublicSubnets, err := publicSubnetsOf(r.Context(), store, subnet, subnet.ID)
 		if err != nil {

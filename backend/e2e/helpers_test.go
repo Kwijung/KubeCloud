@@ -20,8 +20,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/clientcmd"
@@ -260,6 +260,19 @@ func (c *console) login() {
 		}
 	}
 	c.t.Fatalf("could not log in to the console: %q", c.buf.String())
+}
+
+// waitForDefaultRoute waits until the guest's DHCP lease has installed a default route.
+func (c *console) waitForDefaultRoute() {
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		if rc, _ := c.run("ip route | grep -q default", 10*time.Second); rc == 0 {
+			return
+		}
+		time.Sleep(3 * time.Second)
+	}
+	_, out := c.run("ip addr; ip route", 10*time.Second)
+	c.t.Fatalf("the guest never got a default route:\n%s", out)
 }
 
 // run executes cmd and returns its exit status and output.
